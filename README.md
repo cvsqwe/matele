@@ -57,7 +57,7 @@ async def got_name(ctx: Context):
 dp.run_polling(MaxBot(MAX_TOKEN), TelegramBot(TG_TOKEN))
 ```
 
-Можно запустить только один из ботов, если второй мессенджер не нужен. Пример побольше лежит в [examples/two_messengers.py](examples/two_messengers.py).
+Можно запустить только один из ботов, если второй мессенджер не нужен. Пример побольше лежит в [examples/two_messengers.py](https://github.com/cvsqwe/matele/blob/main/examples/two_messengers.py).
 
 ## Кнопки
 
@@ -173,7 +173,7 @@ data = bot.verify_init_data(request.headers["X-Init-Data"])  # иначе InitDa
 await bot.send_message("Заказ принят", user_id=data.user.id)
 ```
 
-Проверка одна на оба мессенджера: подпись и срок (по умолчанию час, как советует MAX). Готовый пример со страницей и сервером на FastAPI лежит в [examples/mini_app](examples/mini_app).
+Проверка одна на оба мессенджера: подпись и срок (по умолчанию час, как советует MAX). Готовый пример со страницей и сервером на FastAPI лежит в [examples/mini_app](https://github.com/cvsqwe/matele/tree/main/examples/mini_app).
 
 ## Рассылки
 
@@ -237,7 +237,7 @@ assert bot.sent[-1].text == "Привет! На каком языке говор
 
 ## Что дальше
 
-Ближайшее: проверка на живых ботах и релиз на PyPI. Подробнее в [ROADMAP.md](ROADMAP.md).
+Ближайшее: проверка на живых ботах и релиз на PyPI. Подробнее в [ROADMAP.md](https://github.com/cvsqwe/matele/blob/main/ROADMAP.md).
 
 ## Разработка
 

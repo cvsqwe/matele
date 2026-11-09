@@ -4,8 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "matele"
-version = "0.1.0.dev0"
+dynamic = ["version"]
 description = "One bot, two messengers: an async framework for MAX and Telegram bots"
+authors = [{ name = "cvsqwe" }]
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -19,9 +20,19 @@ classifiers = [
 	"Framework :: AsyncIO",
 	"Intended Audience :: Developers",
 	"Programming Language :: Python :: 3",
+	"Programming Language :: Python :: 3.11",
+	"Programming Language :: Python :: 3.12",
+	"Programming Language :: Python :: 3.13",
+	"Natural Language :: Russian",
 	"Topic :: Communications :: Chat",
 	"Typing :: Typed",
 ]
+
+[project.urls]
+Homepage = "https://github.com/cvsqwe/matele"
+Source = "https://github.com/cvsqwe/matele"
+Issues = "https://github.com/cvsqwe/matele/issues"
+Changelog = "https://github.com/cvsqwe/matele/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 webhook = ["uvicorn>=0.29"]
@@ -36,6 +47,9 @@ dev = [
 	"redis>=5",
 	"fastapi>=0.110",  # examples/mini_app
 ]
+
+[tool.hatch.version]
+path = "src/matele/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/matele"]
