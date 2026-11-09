@@ -38,7 +38,7 @@ class Feedback(StatesGroup):
 	text = State()
 
 
-@dp.command("start")
+@dp.command("start", description="Начать заново")
 async def start(ctx: Context) -> None:
 	keyboard = Keyboard([[Button("🍵 Чай", Vote("tea").pack()), Button("☕ Кофе", Vote("coffee").pack())]])
 	await ctx.reply(f"Привет, {ctx.user.name}! Вы пишете из {platform_title(ctx.platform)}.\nЧай или кофе?", keyboard)
@@ -50,13 +50,13 @@ async def vote(ctx: Context, payload: Vote) -> None:
 	await ctx.edit(f"Вы выбрали: {'чай' if payload.choice == 'tea' else 'кофе'}. Оставить отзыв: /feedback")
 
 
-@dp.command("feedback")
+@dp.command("feedback", description="Оставить отзыв")
 async def feedback(ctx: Context) -> None:
 	ctx.state.set(Feedback.text)
 	await ctx.reply("Напишите отзыв одним сообщением (или /cancel).")
 
 
-@dp.command("cancel")
+@dp.command("cancel", description="Отменить")
 async def cancel(ctx: Context) -> None:
 	ctx.state.clear()
 	await ctx.reply("Отменено.")

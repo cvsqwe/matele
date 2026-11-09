@@ -69,6 +69,8 @@ class WebhookTransport(Protocol):
 
 	async def parse_webhook(self, data: dict[str, Any]) -> list[IncomingEvent]: ...
 
+	async def set_commands(self, commands: list[tuple[str, str]]) -> None: ...
+
 
 class Webhook:
 	def __init__(
@@ -107,6 +109,7 @@ class Webhook:
 		self.dp.freeze()
 		for path, bot in self.routes.items():
 			me = await bot.get_me()
+			await self.dp.publish_commands(bot)
 			if self.base_url:
 				await bot.set_webhook(self.base_url + path, secret=self.secret)
 				logger.info("%s: webhook for @%s at %s%s", bot.title, me.username, self.base_url, path)

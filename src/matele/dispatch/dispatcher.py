@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any, NamedTuple, TypeVar
+from typing import Any, NamedTuple, Protocol, TypeVar
 
 from matele.callbacks import CallbackError, CallbackRegistry, default_registry
 from matele.dispatch.context import Context
@@ -63,6 +63,12 @@ def event_chat_id(event: IncomingEvent) -> int | None:
 		return event.chat_id
 	message = event if isinstance(event, Message) else event.message if isinstance(event, CallbackQuery) else None
 	return message.chat_id if message is not None and message.chat_type != PRIVATE else None
+
+
+class CommandMenuOwner(Protocol):
+	title: str
+
+	async def set_commands(self, commands: list[tuple[str, str]]) -> None: ...
 
 
 class Dispatcher(Router):
@@ -230,13 +236,38 @@ class Dispatcher(Router):
 				logger.exception("Error handler %r failed", handler)
 
 	# ------------------------------------------------------------ running
+	def menu_commands(self) -> list[tuple[str, str]]:
+		"""(name, description) of every command registered with a description,
+		in registration order."""
+		self.freeze()
+		assert self._table is not None
+		menu: dict[str, str] = {}
+		for handler in self._table[Kind.MESSAGE]:
+			if handler.menu is not None:
+				name, description = handler.menu
+				menu.setdefault(name, description)  # the first registration wins
+		return list(menu.items())
+
+	async def publish_commands(self, *clients: CommandMenuOwner) -> None:
+		"""Shows the described commands in each messenger's command menu.
+		A failure is logged, not raised: the bot works without a menu."""
+		commands = self.menu_commands()
+		if not commands:
+			return
+		for client in clients:
+			try:
+				await client.set_commands(commands)
+			except Exception as exc:
+				logger.warning("%s: could not set the command menu: %s", client.title, exc)
+
 	async def start_polling(self, *clients: BotClient, timeout: int = 30) -> None:
-		"""Long-polls every client until cancelled."""
+		"""Publishes the command menu, then long-polls every client until cancelled."""
 		from matele.dispatch.polling import poll
 
 		if not clients:
 			raise ValueError("start_polling() needs at least one bot client")
 		self.freeze()
+		await self.publish_commands(*clients)
 		await asyncio.gather(*(poll(self, client, timeout=timeout) for client in clients))
 
 	def run_polling(self, *clients: BotClient, timeout: int = 30) -> None:

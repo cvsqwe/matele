@@ -266,6 +266,9 @@ class MaxBot:
 	async def send_typing(self, chat_id: int) -> None:
 		await self.api.send_action(chat_id, "typing_on")
 
+	async def set_commands(self, commands: list[tuple[str, str]]) -> None:
+		await self.api.set_my_commands(m.BotCommand(name=n, description=d) for n, d in commands)
+
 	async def send_file_by_token(
 		self,
 		token: str,

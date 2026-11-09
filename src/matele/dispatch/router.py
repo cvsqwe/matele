@@ -29,6 +29,7 @@ no state".
 from __future__ import annotations
 
 import enum
+import re
 from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass
 from typing import Any, TypeVar
@@ -38,6 +39,7 @@ from matele.dispatch.filters import Filter, FilterLike, as_filter
 from matele.fsm.state import ANY_STATE, StateSpec, is_any
 
 HandlerFunc = Callable[..., Awaitable[Any]]
+_MENU_NAME = re.compile(r"^[a-z0-9_]{1,32}$")  # what both messengers accept in the menu
 H = TypeVar("H", bound=HandlerFunc)
 P = TypeVar("P", bound=CallbackData)
 
@@ -57,6 +59,7 @@ class Handler:
 	state: StateSpec
 	router: Router
 	commands: frozenset[str] | None = None  # command handlers only
+	menu: tuple[str, str] | None = None  # (name, description) shown in the command menu
 	payload_cls: type[CallbackData] | None = None  # typed button handlers: func(ctx, payload)
 
 	@property
@@ -98,17 +101,37 @@ class Router:
 		"""Any incoming message (text, files…) that passes the filters."""
 		return self._register(Kind.MESSAGE, filters, state)
 
-	def command(self, *names_and_filters: str | FilterLike, state: StateSpec = ANY_STATE) -> Callable[[H], H]:
+	def command(
+		self,
+		*names_and_filters: str | FilterLike,
+		state: StateSpec = ANY_STATE,
+		description: str | None = None,
+	) -> Callable[[H], H]:
 		"""`/name` messages; strings are command names, the rest are filters:
-		@router.command("start", "help", is_admin)."""
+		@router.command("start", "help", is_admin).
+
+		With a `description`, the command (its first name) is shown in the
+		messengers' command menu when the bot starts; without one it works
+		but stays hidden."""
 		names = [n for n in names_and_filters if isinstance(n, str)]
 		filters = tuple(f for f in names_and_filters if not isinstance(f, str))
 		if not names:
 			raise ValueError("command() needs at least one command name")
-		commands = frozenset(n.removeprefix("/").lower() for n in names)
-		if any(not c or " " in c for c in commands):
+		ordered = [n.removeprefix("/").lower() for n in names]
+		if any(not c or " " in c for c in ordered):
 			raise ValueError(f"bad command names: {names!r}")
-		return self._register(Kind.MESSAGE, filters, state, commands=commands)
+		if description is not None:
+			if not _MENU_NAME.match(ordered[0]):
+				raise ValueError(f"/{ordered[0]}: a command in the menu must be 1-32 of a-z, 0-9, _")
+			if not 1 <= len(description) <= 256:
+				raise ValueError(f"/{ordered[0]}: the description must be 1-256 characters")
+		return self._register(
+			Kind.MESSAGE,
+			filters,
+			state,
+			commands=frozenset(ordered),
+			menu=(ordered[0], description) if description is not None else None,
+		)
 
 	def callback(
 		self, target: type[P] | P, *filters: FilterLike, state: StateSpec = ANY_STATE
@@ -140,6 +163,7 @@ class Router:
 		*,
 		commands: frozenset[str] | None = None,
 		payload_cls: type[CallbackData] | None = None,
+		menu: tuple[str, str] | None = None,
 	) -> Callable[[Any], Any]:
 		self._check_open()
 
@@ -154,6 +178,7 @@ class Router:
 					router=self,
 					commands=commands,
 					payload_cls=payload_cls,
+					menu=menu,
 				)
 			)
 			return func

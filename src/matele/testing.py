@@ -79,6 +79,7 @@ class FakeBot:
 	deleted: list[str] = field(default_factory=list)
 	answers: list[Answer] = field(default_factory=list)
 	typing: list[int] = field(default_factory=list)  # chat ids "typing…" was shown in
+	commands: list[tuple[str, str]] = field(default_factory=list)  # the command menu
 	closed: bool = False
 
 	def __post_init__(self) -> None:
@@ -206,6 +207,9 @@ class FakeBot:
 
 	async def send_typing(self, chat_id: int) -> None:
 		self.typing.append(chat_id)
+
+	async def set_commands(self, commands: list[tuple[str, str]]) -> None:
+		self.commands = list(commands)
 
 	async def edit_message(self, message_id: str, text: str | None, *, keyboard: Keyboard | None = None) -> None:
 		self._require(message_id)

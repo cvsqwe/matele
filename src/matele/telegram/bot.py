@@ -480,6 +480,9 @@ class TelegramBot:
 	async def send_typing(self, chat_id: int) -> None:
 		await self.api.call("sendChatAction", chat_id=chat_id, action="typing")
 
+	async def set_commands(self, commands: list[tuple[str, str]]) -> None:
+		await self.api.call("setMyCommands", commands=[{"command": n, "description": d} for n, d in commands])
+
 	async def send_file_by_token(
 		self,
 		token: str,
