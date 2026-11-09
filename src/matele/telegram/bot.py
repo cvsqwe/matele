@@ -17,10 +17,12 @@ What it papers over so handlers don't care which messenger they're on:
   • a link button with a non-http(s)/tg link would make Telegram reject
 	the whole message: it becomes an inert button instead;
   • text that isn't valid HTML is re-sent as plain text;
-  • `my_chat_member` kicked/member in a private chat becomes ChatStatus.
+  • `my_chat_member` kicked/member in a private chat becomes ChatStatus;
+	in a group it becomes a ChatMemberUpdate for the bot itself, and
+	"joined"/"left" service messages become ChatMemberUpdates.
 
 Everything else Telegram can do is on `bot.api` (a TelegramApi).
-Only private chats are routed for now.
+Private chats and groups are routed; channels are not.
 """
 
 from __future__ import annotations
@@ -34,15 +36,19 @@ from typing import Any, Protocol
 from matele.errors import BotApiError, ConnectionGuard
 from matele.telegram.api import DEFAULT_API_URL, InputFile, TelegramApi, api_error
 from matele.types import (
+	GROUP,
+	PRIVATE,
 	TELEGRAM,
 	Attachment,
 	Button,
 	CallbackQuery,
+	ChatMemberUpdate,
 	ChatStatus,
 	IncomingEvent,
 	Keyboard,
 	Message,
 	User,
+	recipient,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,6 +71,16 @@ SEND_BY_TYPE = {
 	"animation": ("sendAnimation", "animation", True),
 	"video_note": ("sendVideoNote", "video_note", False),
 }
+
+
+_CHAT_TYPES = {"private": PRIVATE, "group": GROUP, "supergroup": GROUP}
+_IN_CHAT = {"creator", "administrator", "member", "restricted"}
+
+
+def _target(chat_id: int | None, user_id: int | None) -> int:
+	"""On Telegram a private chat's id is the person's id: one address."""
+	chat_id, user_id = recipient(chat_id, user_id)
+	return chat_id if chat_id is not None else user_id  # type: ignore[return-value]
 
 
 def _is_benign(exc: BotApiError, *needles: str) -> bool:
@@ -188,36 +204,82 @@ class TelegramBot:
 		for update in updates:
 			self._offset = update["update_id"] + 1
 			try:
-				event = await self.parse_update(update)
+				events.extend(await self.parse_update(update))
 			except Exception:
 				logger.exception("Could not parse Telegram update: %r", update)
-				continue
-			if event is not None:
-				events.append(event)
 		return events
 
-	async def parse_update(self, update: dict[str, Any]) -> IncomingEvent | None:
-		"""One Telegram update -> a matele event (None for updates not routed)."""
+	async def parse_update(self, update: dict[str, Any]) -> list[IncomingEvent]:
+		"""One Telegram update -> matele events (usually one; none for
+		updates not routed; several when several people joined at once)."""
 		if "message" in update:
 			raw = update["message"]
-			if raw.get("chat", {}).get("type") != "private" or not raw.get("from"):
-				return None
-			return self._message(raw)
+			chat_type = _CHAT_TYPES.get(raw.get("chat", {}).get("type"))
+			if chat_type is None or not raw.get("from"):
+				return []  # channels, anonymous posts
+			if raw.get("new_chat_members") or raw.get("left_chat_member"):
+				return self._membership_messages(raw)
+			return [self._message(raw)]
 		if "my_chat_member" in update:
-			raw = update["my_chat_member"]
-			if raw.get("chat", {}).get("type") != "private" or not raw.get("from"):
-				return None
-			status = (raw.get("new_chat_member") or {}).get("status")
-			if status not in ("kicked", "member"):
-				return None
-			return ChatStatus(from_user=self._user(raw["from"]), reachable=status == "member", bot=self)
+			return self._my_membership(update["my_chat_member"])
 		if "callback_query" in update:
 			raw = update["callback_query"]
 			data = await self.aliases.decode(raw.get("data")) or ""
 			raw_message = raw.get("message")
 			message = self._message(raw_message) if raw_message and raw_message.get("chat") else None
-			return CallbackQuery(id=raw["id"], data=data, from_user=self._user(raw["from"]), message=message, bot=self)
-		return None
+			return [
+				CallbackQuery(id=raw["id"], data=data, from_user=self._user(raw["from"]), message=message, bot=self)
+			]
+		return []
+
+	def _is_me(self, user_id: int) -> bool:
+		return self.me is not None and self.me.id == user_id
+
+	def _membership_messages(self, raw: dict[str, Any]) -> list[IncomingEvent]:
+		"""Service messages "X joined" / "X left". The bot's own joins and
+		leaves are skipped here: they come as my_chat_member too."""
+		chat_id, by = raw["chat"]["id"], self._user(raw["from"])
+		changes = [(m, True) for m in raw.get("new_chat_members") or []]
+		if raw.get("left_chat_member"):
+			changes.append((raw["left_chat_member"], False))
+		return [
+			ChatMemberUpdate(chat_id=chat_id, member=self._user(m), joined=joined, is_me=False, from_user=by, bot=self)
+			for m, joined in changes
+			if not self._is_me(m["id"])
+		]
+
+	def _my_membership(self, raw: dict[str, Any]) -> list[IncomingEvent]:
+		"""The bot's own status changed: blocked/unblocked in a private chat,
+		added to/removed from a group."""
+		chat_type = _CHAT_TYPES.get(raw.get("chat", {}).get("type"))
+		if chat_type is None or not raw.get("from"):
+			return []
+		old = (raw.get("old_chat_member") or {}).get("status")
+		new_member = raw.get("new_chat_member") or {}
+		new = new_member.get("status")
+		if chat_type == PRIVATE:
+			if new not in ("kicked", "member"):
+				return []
+			return [ChatStatus(from_user=self._user(raw["from"]), reachable=new == "member", bot=self)]
+		was_in, is_in = old in _IN_CHAT, new in _IN_CHAT
+		if was_in == is_in:
+			return []  # e.g. promoted to admin: not a join or a leave
+		if self.me is not None:
+			me = self.me
+		elif new_member.get("user"):
+			me = self._user(new_member["user"])
+		else:
+			me = User(id=0, platform=self.platform)
+		return [
+			ChatMemberUpdate(
+				chat_id=raw["chat"]["id"],
+				member=me,
+				joined=is_in,
+				is_me=True,
+				from_user=self._user(raw["from"]),
+				bot=self,
+			)
+		]
 
 	def _user(self, data: dict[str, Any]) -> User:
 		name = " ".join(p for p in (data.get("first_name"), data.get("last_name")) if p) or None
@@ -250,6 +312,7 @@ class TelegramBot:
 			text=text,
 			bot=self,
 			attachments=self._attachments(raw),
+			chat_type=_CHAT_TYPES.get(raw["chat"].get("type"), GROUP),
 		)
 
 	# ------------------------------------------------------------ outgoing
@@ -281,12 +344,20 @@ class TelegramBot:
 				raise
 			return await self.api.call(method, **params)
 
-	async def send_message(self, text: str, *, user_id: int, keyboard: Keyboard | None = None) -> Message:
+	async def send_message(
+		self,
+		text: str,
+		*,
+		chat_id: int | None = None,
+		user_id: int | None = None,
+		keyboard: Keyboard | None = None,
+	) -> Message:
+		target = _target(chat_id, user_id)
 		markup = self.markup(keyboard)
 		await self.aliases.flush()
 		raw = await self._call_html(
 			"sendMessage",
-			chat_id=user_id,
+			chat_id=target,
 			text=text,
 			link_preview_options={"is_disabled": True},
 			reply_markup=markup,
@@ -333,7 +404,7 @@ class TelegramBot:
 
 	# ------------------------------------------------------------ files
 	async def _send_with_caption(
-		self, method: str, params: dict[str, Any], *, caption: str | None, supports_caption: bool, user_id: int
+		self, method: str, params: dict[str, Any], *, caption: str | None, supports_caption: bool
 	) -> Message:
 		long_caption = None
 		if caption and supports_caption and len(caption) <= CAPTION_LIMIT:
@@ -343,28 +414,33 @@ class TelegramBot:
 			raw = await self.api.call(method, **params)
 		sent = self._message(raw)
 		if long_caption:
-			await self.send_message(long_caption, user_id=user_id)
+			await self.send_message(long_caption, chat_id=params["chat_id"])
 		return sent
 
 	async def send_document(
-		self, content: bytes, filename: str, *, user_id: int, caption: str | None = None
+		self,
+		content: bytes,
+		filename: str,
+		*,
+		chat_id: int | None = None,
+		user_id: int | None = None,
+		caption: str | None = None,
 	) -> Message:
-		params = {"chat_id": user_id, "document": InputFile(content, filename)}
-		return await self._send_with_caption(
-			"sendDocument", params, caption=caption, supports_caption=True, user_id=user_id
-		)
+		params = {"chat_id": _target(chat_id, user_id), "document": InputFile(content, filename)}
+		return await self._send_with_caption("sendDocument", params, caption=caption, supports_caption=True)
 
 	async def send_file_by_token(
-		self, token: str, *, user_id: int, file_type: str = "file", caption: str | None = None
+		self,
+		token: str,
+		*,
+		chat_id: int | None = None,
+		user_id: int | None = None,
+		file_type: str = "file",
+		caption: str | None = None,
 	) -> Message:
 		method, field, supports_caption = SEND_BY_TYPE.get(file_type, SEND_BY_TYPE["file"])
-		return await self._send_with_caption(
-			method,
-			{"chat_id": user_id, field: token},
-			caption=caption,
-			supports_caption=supports_caption,
-			user_id=user_id,
-		)
+		params = {"chat_id": _target(chat_id, user_id), field: token}
+		return await self._send_with_caption(method, params, caption=caption, supports_caption=supports_caption)
 
 	async def download_file(
 		self, token: str, *, file_type: str, filename: str, url: str | None = None

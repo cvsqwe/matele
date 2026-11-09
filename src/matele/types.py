@@ -10,6 +10,10 @@ from typing import Protocol
 MAX = "max"
 TELEGRAM = "telegram"
 
+# Normalised chat types (each transport maps its own onto these).
+PRIVATE = "private"
+GROUP = "group"
+
 
 @dataclass
 class Button:
@@ -52,6 +56,11 @@ class Message:
 	text: str | None
 	bot: BotClient = field(repr=False)
 	attachments: list[Attachment] = field(default_factory=list)
+	chat_type: str = PRIVATE  # PRIVATE or GROUP
+
+	@property
+	def is_private(self) -> bool:
+		return self.chat_type == PRIVATE
 
 
 @dataclass
@@ -68,22 +77,42 @@ Event = Message | CallbackQuery
 
 @dataclass
 class ChatStatus:
-	"""The person blocked (reachable=False) or restarted the bot."""
+	"""The person blocked (reachable=False) or restarted the bot in their
+	private chat."""
 
 	from_user: User
 	reachable: bool
 	bot: BotClient = field(repr=False)
 
 
-IncomingEvent = Event | ChatStatus
+@dataclass
+class ChatMemberUpdate:
+	"""Someone joined or left a group. `member` is who joined/left
+	(`is_me`: the bot itself was added or removed); `from_user` is who did
+	it, if known (the member themselves when they joined/left on their own)."""
+
+	chat_id: int
+	member: User
+	joined: bool
+	is_me: bool
+	from_user: User
+	bot: BotClient = field(repr=False)
+	chat_type: str = GROUP
+
+
+IncomingEvent = Event | ChatStatus | ChatMemberUpdate
 
 
 class BotClient(Protocol):
-	"""What every transport offers the framework. Addressed by the
-	recipient's user id: private chats only for now."""
+	"""What every transport offers the framework.
+
+	Outgoing calls take a recipient as `chat_id=` (a chat the bot is in,
+	e.g. a group) or `user_id=` (a person's private chat with the bot);
+	exactly one of them."""
 
 	platform: str
 	title: str
+	me: User | None  # the bot itself, known after get_me()
 
 	async def close(self) -> None: ...
 
@@ -93,7 +122,14 @@ class BotClient(Protocol):
 
 	async def get_events(self, timeout: int = 30) -> list[IncomingEvent]: ...
 
-	async def send_message(self, text: str, *, user_id: int, keyboard: Keyboard | None = None) -> Message: ...
+	async def send_message(
+		self,
+		text: str,
+		*,
+		chat_id: int | None = None,
+		user_id: int | None = None,
+		keyboard: Keyboard | None = None,
+	) -> Message: ...
 
 	async def edit_message(self, message_id: str, text: str | None, *, keyboard: Keyboard | None = None) -> None: ...
 
@@ -102,13 +138,32 @@ class BotClient(Protocol):
 	async def answer_callback(self, callback_id: str, *, text: str | None = None, alert: bool = False) -> None: ...
 
 	async def send_document(
-		self, content: bytes, filename: str, *, user_id: int, caption: str | None = None
+		self,
+		content: bytes,
+		filename: str,
+		*,
+		chat_id: int | None = None,
+		user_id: int | None = None,
+		caption: str | None = None,
 	) -> Message: ...
 
 	async def send_file_by_token(
-		self, token: str, *, user_id: int, file_type: str = "file", caption: str | None = None
+		self,
+		token: str,
+		*,
+		chat_id: int | None = None,
+		user_id: int | None = None,
+		file_type: str = "file",
+		caption: str | None = None,
 	) -> Message: ...
 
 	async def download_file(
 		self, token: str, *, file_type: str, filename: str, url: str | None = None
 	) -> tuple[bytes, str]: ...
+
+
+def recipient(chat_id: int | None, user_id: int | None) -> tuple[int | None, int | None]:
+	"""Checks that exactly one recipient is given (transports call it)."""
+	if (chat_id is None) == (user_id is None):
+		raise ValueError("pass exactly one of chat_id=, user_id=")
+	return chat_id, user_id

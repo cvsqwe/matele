@@ -16,7 +16,7 @@ calls, papering over what differs from other messengers:
   • text is sent as HTML.
 
 Everything MAX can do beyond that is on `bot.api` (a MaxApi).
-Only private dialogs are routed for now; group chats are ignored.
+Private dialogs and group chats are routed; channels are not.
 """
 
 from __future__ import annotations
@@ -25,24 +25,29 @@ import html
 import logging
 from urllib.parse import urlsplit
 
-from matele.errors import ConnectionGuard
+from matele.errors import BotForbiddenError, ConnectionGuard
 from matele.max import models as m
 from matele.max.api import DEFAULT_BASE_URL, MaxApi
 from matele.types import (
+	GROUP,
 	MAX,
+	PRIVATE,
 	Attachment,
 	Button,
 	CallbackQuery,
+	ChatMemberUpdate,
 	ChatStatus,
 	IncomingEvent,
 	Keyboard,
 	Message,
 	User,
+	recipient,
 )
 
 logger = logging.getLogger(__name__)
 
 _CALLBACK_USERS_LIMIT = 1000
+_CHAT_TYPES = {"dialog": PRIVATE, "chat": GROUP}
 _DEFAULT_FILENAMES = {"image": "image.jpg", "video": "video.mp4", "audio": "audio", "file": "file"}
 
 
@@ -94,8 +99,8 @@ class MaxBot:
 		"""One MAX update -> a matele event (None for updates not routed)."""
 		if isinstance(update, m.MessageCreatedUpdate):
 			msg = update.message
-			if msg.sender is None or msg.recipient.chat_type != "dialog":
-				return None  # channel posts, system messages, group chats
+			if msg.sender is None or msg.recipient.chat_type not in _CHAT_TYPES:
+				return None  # channel posts, system messages
 			return self._message(msg)
 		if isinstance(update, m.MessageCallbackUpdate):
 			cb = update.callback
@@ -118,6 +123,31 @@ class MaxBot:
 			)
 		if isinstance(update, m.BotStoppedUpdate):
 			return ChatStatus(from_user=self._user(update.user), reachable=False, bot=self)
+		if isinstance(update, m.BotAddedToChatUpdate | m.BotRemovedFromChatUpdate):
+			if update.is_channel:
+				return None
+			me = self.me or User(id=0, platform=self.platform)
+			return ChatMemberUpdate(
+				chat_id=update.chat_id,
+				member=me,
+				joined=isinstance(update, m.BotAddedToChatUpdate),
+				is_me=True,
+				from_user=self._user(update.user),
+				bot=self,
+			)
+		if isinstance(update, m.UserAddedToChatUpdate | m.UserRemovedFromChatUpdate):
+			if update.is_channel:
+				return None
+			member = self._user(update.user)
+			by = update.inviter_id if isinstance(update, m.UserAddedToChatUpdate) else update.admin_id
+			return ChatMemberUpdate(
+				chat_id=update.chat_id,
+				member=member,
+				joined=isinstance(update, m.UserAddedToChatUpdate),
+				is_me=self.me is not None and member.id == self.me.id,
+				from_user=User(id=by, platform=self.platform) if by else member,
+				bot=self,
+			)
 		logger.debug("Ignoring MAX update %s", update.update_type)
 		return None
 
@@ -135,6 +165,7 @@ class MaxBot:
 			text=msg.body.text,
 			bot=self,
 			attachments=[a for a in map(_attachment, msg.body.attachments or []) if a is not None],
+			chat_type=_CHAT_TYPES.get(msg.recipient.chat_type, GROUP),
 		)
 
 	def _remember_callback(self, callback_id: str, user_id: int) -> None:
@@ -143,10 +174,20 @@ class MaxBot:
 		self._callback_users[callback_id] = user_id
 
 	# ------------------------------------------------------------ outgoing
-	async def send_message(self, text: str, *, user_id: int, keyboard: Keyboard | None = None) -> Message:
+	async def send_message(
+		self,
+		text: str,
+		*,
+		chat_id: int | None = None,
+		user_id: int | None = None,
+		keyboard: Keyboard | None = None,
+	) -> Message:
+		chat_id, user_id = recipient(chat_id, user_id)
 		body, keyboard = move_unlinkable_buttons(text, keyboard)
 		attachments = [keyboard_attachment(keyboard)] if keyboard is not None else None
-		sent = await self.api.send_message(user_id=user_id, text=body, format="html", attachments=attachments)
+		sent = await self.api.send_message(
+			chat_id=chat_id, user_id=user_id, text=body, format="html", attachments=attachments
+		)
 		return self._message(sent)
 
 	async def edit_message(self, message_id: str, text: str | None, *, keyboard: Keyboard | None = None) -> None:
@@ -162,23 +203,47 @@ class MaxBot:
 		user_id = self._callback_users.pop(callback_id, None)
 		await self.api.answer_callback(callback_id, notification=text or "")
 		if alert and text and user_id is not None:
-			await self.send_message(html.escape(text, quote=False), user_id=user_id)
+			# Privately, also when the button is in a group: an alert is
+			# meant for the person who pressed, not for the whole chat.
+			try:
+				await self.send_message(html.escape(text, quote=False), user_id=user_id)
+			except BotForbiddenError:
+				logger.debug("Alert not delivered: user %s never started the bot", user_id)
 
 	async def send_document(
-		self, content: bytes, filename: str, *, user_id: int, caption: str | None = None
+		self,
+		content: bytes,
+		filename: str,
+		*,
+		chat_id: int | None = None,
+		user_id: int | None = None,
+		caption: str | None = None,
 	) -> Message:
+		chat_id, user_id = recipient(chat_id, user_id)
 		attachment = await self.api.upload(content, type="file", filename=filename)
-		sent = await self.api.send_message(
-			user_id=user_id, text=caption, format="html" if caption else None, attachments=[attachment]
-		)
-		return self._message(sent)
+		return await self._send_attachment(attachment, chat_id, user_id, caption)
 
 	async def send_file_by_token(
-		self, token: str, *, user_id: int, file_type: str = "file", caption: str | None = None
+		self,
+		token: str,
+		*,
+		chat_id: int | None = None,
+		user_id: int | None = None,
+		file_type: str = "file",
+		caption: str | None = None,
 	) -> Message:
-		attachment = _attachment_by_token(file_type, token)
+		chat_id, user_id = recipient(chat_id, user_id)
+		return await self._send_attachment(_attachment_by_token(file_type, token), chat_id, user_id, caption)
+
+	async def _send_attachment(
+		self, attachment: m.AttachmentRequest, chat_id: int | None, user_id: int | None, caption: str | None
+	) -> Message:
 		sent = await self.api.send_message(
-			user_id=user_id, text=caption, format="html" if caption else None, attachments=[attachment]
+			chat_id=chat_id,
+			user_id=user_id,
+			text=caption,
+			format="html" if caption else None,
+			attachments=[attachment],
 		)
 		return self._message(sent)
 

@@ -2,6 +2,7 @@
 
 from matele.callbacks import CallbackData, CallbackError, CallbackRegistry, action, callback, parse
 from matele.dispatch import (
+	ChatType,
 	Context,
 	Dispatcher,
 	Filter,
@@ -22,12 +23,15 @@ from matele.errors import (
 )
 from matele.fsm import ANY_STATE, FSMContext, MemoryStorage, State, StatesGroup, Storage, StorageKey
 from matele.types import (
+	GROUP,
 	MAX,
+	PRIVATE,
 	TELEGRAM,
 	Attachment,
 	BotClient,
 	Button,
 	CallbackQuery,
+	ChatMemberUpdate,
 	ChatStatus,
 	Event,
 	IncomingEvent,
@@ -40,7 +44,9 @@ __version__ = "0.1.0.dev0"
 
 __all__ = [
 	"ANY_STATE",
+	"GROUP",
 	"MAX",
+	"PRIVATE",
 	"TELEGRAM",
 	"Attachment",
 	"BotApiError",
@@ -52,7 +58,9 @@ __all__ = [
 	"CallbackError",
 	"CallbackQuery",
 	"CallbackRegistry",
+	"ChatMemberUpdate",
 	"ChatStatus",
+	"ChatType",
 	"ConnectionGuard",
 	"Context",
 	"Dispatcher",

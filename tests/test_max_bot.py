@@ -81,7 +81,7 @@ def test_parses_messages_buttons_and_lifecycle(bot):
 @pytest.mark.parametrize(
 	"raw",
 	[
-		{"update_type": "message_created", "timestamp": 1, "message": message(chat_type="chat")},
+		{"update_type": "message_created", "timestamp": 1, "message": message(chat_type="channel")},
 		{"update_type": "message_created", "timestamp": 1, "message": {**message(), "sender": None}},
 		{"update_type": "dialog_muted", "timestamp": 1, "chat_id": 1, "user": user()},
 		{"update_type": "brand_new_update", "timestamp": 1},

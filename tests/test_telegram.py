@@ -148,20 +148,20 @@ async def test_files_go_multipart_and_are_rewound_on_retry(tg, sleeps, tmp_path)
 
 # ---------------------------------------------------------------- TelegramBot: incoming
 async def test_parse_updates(bot):
-	message = await bot.parse_update({"update_id": 1, "message": tg_message("hello")})
+	(message,) = await bot.parse_update({"update_id": 1, "message": tg_message("hello")})
 	assert isinstance(message, Message)
 	assert (
 		message.message_id == "7:10" and message.from_user.name == "Ann Lee" and message.from_user.platform == TELEGRAM
 	)
-	photo = await bot.parse_update(
+	(photo,) = await bot.parse_update(
 		{
 			"update_id": 2,
 			"message": tg_message(None, caption="look", photo=[{"file_id": "small"}, {"file_id": "big"}]),
 		}
 	)
 	assert isinstance(photo, Message) and photo.text == "look" and photo.attachments[0].token == "big"
-	assert await bot.parse_update({"update_id": 3, "message": tg_message(chat_type="group")}) is None
-	blocked = await bot.parse_update(
+	assert await bot.parse_update({"update_id": 3, "message": tg_message(chat_type="channel")}) == []
+	(blocked,) = await bot.parse_update(
 		{
 			"update_id": 4,
 			"my_chat_member": {
@@ -180,7 +180,7 @@ async def test_long_callback_data_round_trips_through_an_alias(bot, tg):
 	await bot.send_message("menu", user_id=7, keyboard=Keyboard([[Button("Go", long_data)]]))
 	sent_data = tg.calls[0][1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
 	assert sent_data.startswith("~") and len(sent_data.encode()) <= 64
-	pressed = await bot.parse_update(
+	(pressed,) = await bot.parse_update(
 		{
 			"update_id": 5,
 			"callback_query": {
@@ -192,7 +192,7 @@ async def test_long_callback_data_round_trips_through_an_alias(bot, tg):
 		}
 	)
 	assert isinstance(pressed, CallbackQuery) and pressed.data == long_data
-	unknown = await TelegramBot(TOKEN, api=tg.api()).parse_update(
+	(unknown,) = await TelegramBot(TOKEN, api=tg.api()).parse_update(
 		{"update_id": 6, "callback_query": {"id": "cb", "from": {"id": 7, "first_name": "A"}, "data": sent_data}}
 	)
 	assert isinstance(unknown, CallbackQuery) and unknown.data == ""  # a restart without a store forgets it

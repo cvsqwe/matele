@@ -18,14 +18,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any, TypeVar
+from typing import Any, NamedTuple, TypeVar
 
 from matele.callbacks import CallbackError, CallbackRegistry, default_registry
 from matele.dispatch.context import Context
 from matele.dispatch.filters import run_filter
 from matele.dispatch.router import Handler, Kind, Router
 from matele.fsm import FSMContext, MemoryStorage, Storage, StorageKey, state_matches
-from matele.types import BotClient, CallbackQuery, ChatStatus, IncomingEvent, Message
+from matele.types import PRIVATE, BotClient, CallbackQuery, ChatMemberUpdate, ChatStatus, IncomingEvent, Message
 
 logger = logging.getLogger(__name__)
 
@@ -36,16 +36,33 @@ M = TypeVar("M", bound=Middleware)
 E = TypeVar("E", bound=ErrorHandler)
 
 
-def parse_command(text: str) -> tuple[str, str | None] | None:
-	"""'/start abc' -> ('start', 'abc'); '/Menu@my_bot' -> ('menu', None)."""
+class Command(NamedTuple):
+	name: str  # lowercased, without "/" and "@bot"
+	args: str | None
+	mention: str | None  # "my_bot" for "/start@my_bot"
+
+
+def parse_command(text: str) -> Command | None:
+	"""'/start abc' -> Command('start', 'abc', None);
+	'/Menu@my_bot' -> Command('menu', None, 'my_bot')."""
 	if not text.startswith("/") or len(text) < 2 or text[1].isspace():
 		return None
 	head, _, rest = text.partition(" ")
 	if "\n" in head:
 		head, _, more = head.partition("\n")
 		rest = more + (" " + rest if rest else "")
-	name = head[1:].split("@", 1)[0].lower()
-	return (name, rest.strip() or None) if name else None
+	name, _, mention = head[1:].partition("@")
+	if not name:
+		return None
+	return Command(name.lower(), rest.strip() or None, mention or None)
+
+
+def event_chat_id(event: IncomingEvent) -> int | None:
+	"""The group an event happened in (None for a private chat)."""
+	if isinstance(event, ChatMemberUpdate):
+		return event.chat_id
+	message = event if isinstance(event, Message) else event.message if isinstance(event, CallbackQuery) else None
+	return message.chat_id if message is not None and message.chat_type != PRIVATE else None
 
 
 class Dispatcher(Router):
@@ -98,7 +115,10 @@ class Dispatcher(Router):
 
 	# ------------------------------------------------------------ dispatch
 	def storage_key(self, event: IncomingEvent) -> StorageKey:
-		return StorageKey(event.from_user.platform, event.from_user.id)
+		"""Whose conversation state an event belongs to: the person's, and in
+		a group the person's in that group (so a form filled in one group
+		doesn't leak into another, or into the private chat)."""
+		return StorageKey(event.from_user.platform, event.from_user.id, event_chat_id(event))
 
 	async def feed(self, event: IncomingEvent) -> bool:
 		"""Processes one event. True if a handler took it. Never raises for
@@ -156,7 +176,16 @@ class Dispatcher(Router):
 			kind = Kind.MESSAGE
 			command = parse_command(event.text or "")
 			if command is not None:
-				ctx.command, ctx.args = command
+				me = getattr(event.bot, "me", None)
+				if (
+					command.mention
+					and me is not None
+					and me.username
+					and command.mention.lower() != me.username.lower()
+				):
+					logger.debug("/%s is addressed to @%s, not to this bot", command.name, command.mention)
+					return None
+				ctx.command, ctx.args = command.name, command.args
 		elif isinstance(event, CallbackQuery):
 			kind = Kind.CALLBACK
 			try:
@@ -165,6 +194,8 @@ class Dispatcher(Router):
 				logger.debug("Unparsed button data: %s", exc)
 		elif isinstance(event, ChatStatus):
 			kind = Kind.CHAT_STATUS
+		elif isinstance(event, ChatMemberUpdate):
+			kind = Kind.MEMBER_UPDATE
 		else:
 			raise TypeError(f"not an event: {event!r}")
 

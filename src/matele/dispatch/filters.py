@@ -153,3 +153,15 @@ class OnPlatform(Filter):
 
 	def check(self, ctx: Context) -> bool:
 		return ctx.platform in self.platforms
+
+
+class ChatType(Filter):
+	"""The event happened in one of these chat types (matele.PRIVATE, matele.GROUP)."""
+
+	def __init__(self, *chat_types: str):
+		if not chat_types:
+			raise ValueError("ChatType() needs at least one chat type")
+		self.chat_types = set(chat_types)
+
+	def check(self, ctx: Context) -> bool:
+		return ctx.chat_type in self.chat_types

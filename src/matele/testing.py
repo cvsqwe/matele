@@ -7,6 +7,10 @@
 	await dp.feed(bot.press(SetStatus(42, "paid"), message=bot.sent[-1].message))
 	assert bot.answers[-1].text == "Готово"
 
+	# in a group: pass chat_id
+	await dp.feed(bot.message("/stats", user_id=1, chat_id=-100))
+	assert bot.sent[-1].chat_id == -100
+
 FakeBot implements the BotClient protocol and records every call. Events
 can also be queued with `push()` for code that polls (`get_events`).
 """
@@ -20,20 +24,25 @@ from dataclasses import dataclass, field
 from matele.callbacks import CallbackData
 from matele.errors import BotApiError
 from matele.types import (
+	GROUP,
 	MAX,
+	PRIVATE,
 	Attachment,
 	CallbackQuery,
+	ChatMemberUpdate,
 	ChatStatus,
 	IncomingEvent,
 	Keyboard,
 	Message,
 	User,
+	recipient,
 )
 
 
 @dataclass
 class Sent:
-	user_id: int
+	chat_id: int | None  # set when sent to a chat (group)
+	user_id: int | None  # set when sent to a person's private chat
 	text: str | None
 	keyboard: Keyboard | None
 	message: Message
@@ -67,6 +76,7 @@ class FakeBot:
 	closed: bool = False
 
 	def __post_init__(self) -> None:
+		self.me: User | None = User(id=self.bot_id, platform=self.platform, name=self.title, username=self.username)
 		self._ids = itertools.count(1)
 		self._queue: asyncio.Queue[IncomingEvent] = asyncio.Queue()
 		self._files: dict[str, tuple[bytes, str]] = {}
@@ -77,18 +87,25 @@ class FakeBot:
 		return User(id=user_id, platform=self.platform, name=name, username=username)
 
 	def message(
-		self, text: str | None = None, *, user_id: int = 1, attachments: list[Attachment] | None = None
+		self,
+		text: str | None = None,
+		*,
+		user_id: int = 1,
+		chat_id: int | None = None,
+		attachments: list[Attachment] | None = None,
 	) -> Message:
-		"""An incoming message from a person."""
+		"""An incoming message from a person: in their private chat, or in
+		the group `chat_id`."""
 		message_id = self._next_id()
 		self._live.add(message_id)
 		return Message(
 			message_id=message_id,
-			chat_id=user_id,
+			chat_id=chat_id if chat_id is not None else user_id,
 			from_user=self.user(user_id),
 			text=text,
 			bot=self,
 			attachments=attachments or [],
+			chat_type=GROUP if chat_id is not None else PRIVATE,
 		)
 
 	def press(self, data: str | CallbackData, *, user_id: int = 1, message: Message | None = None) -> CallbackQuery:
@@ -100,6 +117,18 @@ class FakeBot:
 
 	def blocked(self, *, user_id: int = 1, reachable: bool = False) -> ChatStatus:
 		return ChatStatus(from_user=self.user(user_id), reachable=reachable, bot=self)
+
+	def member(self, chat_id: int, *, user_id: int = 1, joined: bool = True, by: int | None = None) -> ChatMemberUpdate:
+		"""Someone (or the bot itself, user_id=bot.bot_id) joined or left a group."""
+		member = self.me if user_id == self.bot_id and self.me is not None else self.user(user_id)
+		return ChatMemberUpdate(
+			chat_id=chat_id,
+			member=member,
+			joined=joined,
+			is_me=user_id == self.bot_id,
+			from_user=self.user(by) if by is not None else member,
+			bot=self,
+		)
 
 	def push(self, *events: IncomingEvent) -> None:
 		for event in events:
@@ -114,7 +143,8 @@ class FakeBot:
 		self.closed = True
 
 	async def get_me(self) -> User:
-		return User(id=self.bot_id, platform=self.platform, name=self.title, username=self.username)
+		assert self.me is not None
+		return self.me
 
 	def deep_link(self, username: str, payload: str) -> str:
 		return f"https://fake.example/{username}?start={payload}" if payload else f"https://fake.example/{username}"
@@ -129,9 +159,17 @@ class FakeBot:
 			events.append(self._queue.get_nowait())
 		return events
 
-	async def send_message(self, text: str, *, user_id: int, keyboard: Keyboard | None = None) -> Message:
-		message = self._outgoing(user_id, text)
-		self.sent.append(Sent(user_id, text, keyboard, message))
+	async def send_message(
+		self,
+		text: str,
+		*,
+		chat_id: int | None = None,
+		user_id: int | None = None,
+		keyboard: Keyboard | None = None,
+	) -> Message:
+		chat_id, user_id = recipient(chat_id, user_id)
+		message = self._outgoing(chat_id, user_id, text)
+		self.sent.append(Sent(chat_id, user_id, text, keyboard, message))
 		return message
 
 	async def edit_message(self, message_id: str, text: str | None, *, keyboard: Keyboard | None = None) -> None:
@@ -147,20 +185,34 @@ class FakeBot:
 		self.answers.append(Answer(callback_id, text, alert))
 
 	async def send_document(
-		self, content: bytes, filename: str, *, user_id: int, caption: str | None = None
+		self,
+		content: bytes,
+		filename: str,
+		*,
+		chat_id: int | None = None,
+		user_id: int | None = None,
+		caption: str | None = None,
 	) -> Message:
+		chat_id, user_id = recipient(chat_id, user_id)
 		token = f"file{self._next_id()}"
 		self._files[token] = (content, filename)
-		message = self._outgoing(user_id, caption, [Attachment("file", token, filename)])
-		self.sent.append(Sent(user_id, caption, None, message, (filename, content)))
+		message = self._outgoing(chat_id, user_id, caption, [Attachment("file", token, filename)])
+		self.sent.append(Sent(chat_id, user_id, caption, None, message, (filename, content)))
 		return message
 
 	async def send_file_by_token(
-		self, token: str, *, user_id: int, file_type: str = "file", caption: str | None = None
+		self,
+		token: str,
+		*,
+		chat_id: int | None = None,
+		user_id: int | None = None,
+		file_type: str = "file",
+		caption: str | None = None,
 	) -> Message:
+		chat_id, user_id = recipient(chat_id, user_id)
 		content, filename = await self.download_file(token, file_type=file_type, filename="")
-		message = self._outgoing(user_id, caption, [Attachment(file_type, token, filename)])
-		self.sent.append(Sent(user_id, caption, None, message, (filename, content)))
+		message = self._outgoing(chat_id, user_id, caption, [Attachment(file_type, token, filename)])
+		self.sent.append(Sent(chat_id, user_id, caption, None, message, (filename, content)))
 		return message
 
 	async def download_file(
@@ -175,11 +227,21 @@ class FakeBot:
 	def _next_id(self) -> str:
 		return str(next(self._ids))
 
-	def _outgoing(self, user_id: int, text: str | None, attachments: list[Attachment] | None = None) -> Message:
+	def _outgoing(
+		self, chat_id: int | None, user_id: int | None, text: str | None, attachments: list[Attachment] | None = None
+	) -> Message:
 		message_id = self._next_id()
 		self._live.add(message_id)
-		me = User(id=self.bot_id, platform=self.platform, username=self.username)
-		return Message(message_id, user_id, me, text, self, attachments or [])
+		assert self.me is not None
+		return Message(
+			message_id=message_id,
+			chat_id=chat_id if chat_id is not None else user_id or 0,
+			from_user=self.me,
+			text=text,
+			bot=self,
+			attachments=attachments or [],
+			chat_type=GROUP if chat_id is not None else PRIVATE,
+		)
 
 	def _require(self, message_id: str) -> None:
 		if message_id not in self._live:

@@ -46,6 +46,7 @@ class Kind(enum.Enum):
 	MESSAGE = "message"
 	CALLBACK = "callback"
 	CHAT_STATUS = "chat_status"
+	MEMBER_UPDATE = "member_update"
 
 
 @dataclass(eq=False)
@@ -125,6 +126,11 @@ class Router:
 	def chat_status(self, *filters: FilterLike) -> Callable[[H], H]:
 		"""The person blocked or restarted the bot (`ctx.chat_status.reachable`)."""
 		return self._register(Kind.CHAT_STATUS, filters, ANY_STATE)
+
+	def member_update(self, *filters: FilterLike) -> Callable[[H], H]:
+		"""Someone joined or left a group, or the bot was added to / removed
+		from one (`ctx.member_update`: member, joined, is_me)."""
+		return self._register(Kind.MEMBER_UPDATE, filters, ANY_STATE)
 
 	def _register(
 		self,

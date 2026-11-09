@@ -23,7 +23,17 @@ from typing import Any
 from matele.callbacks import CallbackData
 from matele.errors import BotApiError
 from matele.fsm import FSMContext
-from matele.types import BotClient, CallbackQuery, ChatStatus, IncomingEvent, Keyboard, Message, User
+from matele.types import (
+	PRIVATE,
+	BotClient,
+	CallbackQuery,
+	ChatMemberUpdate,
+	ChatStatus,
+	IncomingEvent,
+	Keyboard,
+	Message,
+	User,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,17 +86,47 @@ class Context:
 		return self.event if isinstance(self.event, ChatStatus) else None
 
 	@property
+	def member_update(self) -> ChatMemberUpdate | None:
+		return self.event if isinstance(self.event, ChatMemberUpdate) else None
+
+	@property
+	def chat_type(self) -> str:
+		"""matele.PRIVATE or matele.GROUP: where the event happened."""
+		if isinstance(self.event, ChatMemberUpdate):
+			return self.event.chat_type
+		message = self.message
+		return message.chat_type if message is not None else PRIVATE
+
+	@property
+	def chat_id(self) -> int | None:
+		"""The group the event happened in; None in a private chat."""
+		if isinstance(self.event, ChatMemberUpdate):
+			return self.event.chat_id
+		message = self.message
+		return message.chat_id if message is not None and message.chat_type != PRIVATE else None
+
+	def _target(self) -> dict[str, int]:
+		chat_id = self.chat_id
+		return {"chat_id": chat_id} if chat_id is not None else {"user_id": self.user.id}
+
+	@property
 	def text(self) -> str:
 		"""Text of an incoming message ("" for anything else)."""
 		return (self.event.text or "") if isinstance(self.event, Message) else ""
 
 	# ------------------------------------------------------------ output
 	async def reply(self, text: str, keyboard: Keyboard | None = None) -> Message:
-		"""Sends a new message to the person."""
-		return await self.bot.send_message(text, user_id=self.user.id, keyboard=keyboard)
+		"""Sends a new message where the event happened: to the group, or to
+		the person's private chat."""
+		return await self.bot.send_message(text, keyboard=keyboard, **self._target())
 
 	async def reply_document(self, content: bytes, filename: str, caption: str | None = None) -> Message:
-		return await self.bot.send_document(content, filename, user_id=self.user.id, caption=caption)
+		return await self.bot.send_document(content, filename, caption=caption, **self._target())
+
+	async def send_private(self, text: str, keyboard: Keyboard | None = None) -> Message:
+		"""Sends to the person's private chat with the bot, even from a group
+		(fails if they never started the bot)."""
+		return await self.bot.send_message(text, user_id=self.user.id, keyboard=keyboard)
 
 	async def edit(self, text: str | None, keyboard: Keyboard | None = None) -> None:
 		"""Edits the message the pressed button is on."""

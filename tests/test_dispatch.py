@@ -60,10 +60,10 @@ def bot() -> FakeBot:
 @pytest.mark.parametrize(
 	("text", "expected"),
 	[
-		("/start", ("start", None)),
-		("/start abc", ("start", "abc")),
-		("/Menu@my_bot", ("menu", None)),
-		("/go\nline two", ("go", "line two")),
+		("/start", ("start", None, None)),
+		("/start abc", ("start", "abc", None)),
+		("/Menu@my_bot", ("menu", None, "my_bot")),
+		("/go\nline two", ("go", "line two", None)),
 		("/", None),
 		("/ start", None),
 		("hello", None),
