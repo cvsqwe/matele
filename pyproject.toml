@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "matele"
+version = "0.1.0.dev0"
+description = "One bot, two messengers: an async framework for MAX and Telegram bots"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+	"certifi>=2024.2.2",
+	"httpx>=0.27",
+]
+keywords = ["bot", "max", "telegram", "framework", "asyncio"]
+classifiers = [
+	"Development Status :: 2 - Pre-Alpha",
+	"Framework :: AsyncIO",
+	"Intended Audience :: Developers",
+	"Programming Language :: Python :: 3",
+	"Topic :: Communications :: Chat",
+	"Typing :: Typed",
+]
+
+[project.optional-dependencies]
+dev = [
+	"ruff>=0.17.4",
+	"pytest>=8",
+	"pytest-asyncio>=0.23",
+	"basedpyright==1.40.2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/matele"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.pyright]
+typeCheckingMode = "standard"
+include = ["src", "tests", "examples", "tools"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.format]
+indent-style = "tab"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501", "E101"]
