@@ -44,6 +44,8 @@ from matele.types import (
 	CallbackQuery,
 	ChatMemberUpdate,
 	ChatStatus,
+	FileKind,
+	FileSource,
 	IncomingEvent,
 	Keyboard,
 	Message,
@@ -366,6 +368,7 @@ class TelegramBot:
 		chat_id: int | None = None,
 		user_id: int | None = None,
 		keyboard: Keyboard | None = None,
+		reply_to: str | None = None,
 	) -> Message:
 		target = _target(chat_id, user_id)
 		markup = self.markup(keyboard)
@@ -376,8 +379,15 @@ class TelegramBot:
 			text=text,
 			link_preview_options={"is_disabled": True},
 			reply_markup=markup,
+			reply_parameters=self._reply_parameters(reply_to),
 		)
 		return self._message(raw)
+
+	def _reply_parameters(self, reply_to: str | None) -> dict[str, Any] | None:
+		if not reply_to:
+			return None
+		_, mid = self.split_id(reply_to)
+		return {"message_id": mid, "allow_sending_without_reply": True}
 
 	async def edit_message(self, message_id: str, text: str | None, *, keyboard: Keyboard | None = None) -> None:
 		chat_id, mid = self.split_id(message_id)
@@ -441,8 +451,34 @@ class TelegramBot:
 		user_id: int | None = None,
 		caption: str | None = None,
 	) -> Message:
-		params = {"chat_id": _target(chat_id, user_id), "document": InputFile(content, filename)}
-		return await self._send_with_caption("sendDocument", params, caption=caption, supports_caption=True)
+		return await self.send_file(
+			content, kind="file", filename=filename, chat_id=chat_id, user_id=user_id, caption=caption
+		)
+
+	async def send_file(
+		self,
+		source: FileSource,
+		*,
+		kind: FileKind = "file",
+		filename: str | None = None,
+		chat_id: int | None = None,
+		user_id: int | None = None,
+		caption: str | None = None,
+		keyboard: Keyboard | None = None,
+		reply_to: str | None = None,
+	) -> Message:
+		method, field, supports_caption = SEND_BY_TYPE[kind]
+		params: dict[str, Any] = {
+			"chat_id": _target(chat_id, user_id),
+			field: InputFile(source, filename),
+			"reply_markup": self.markup(keyboard),
+			"reply_parameters": self._reply_parameters(reply_to),
+		}
+		await self.aliases.flush()
+		return await self._send_with_caption(method, params, caption=caption, supports_caption=supports_caption)
+
+	async def send_typing(self, chat_id: int) -> None:
+		await self.api.call("sendChatAction", chat_id=chat_id, action="typing")
 
 	async def send_file_by_token(
 		self,

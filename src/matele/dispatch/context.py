@@ -16,8 +16,11 @@ loads, and pass the subclass to the Dispatcher:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from matele.callbacks import CallbackData
@@ -29,6 +32,8 @@ from matele.types import (
 	CallbackQuery,
 	ChatMemberUpdate,
 	ChatStatus,
+	FileKind,
+	FileSource,
 	IncomingEvent,
 	Keyboard,
 	Message,
@@ -115,13 +120,67 @@ class Context:
 		return (self.event.text or "") if isinstance(self.event, Message) else ""
 
 	# ------------------------------------------------------------ output
-	async def reply(self, text: str, keyboard: Keyboard | None = None) -> Message:
+	def _quoted(self, quote: bool) -> str | None:
+		message = self.message
+		return message.message_id if quote and message is not None and message.message_id else None
+
+	async def reply(self, text: str, keyboard: Keyboard | None = None, *, quote: bool = False) -> Message:
 		"""Sends a new message where the event happened: to the group, or to
-		the person's private chat."""
-		return await self.bot.send_message(text, keyboard=keyboard, **self._target())
+		the person's private chat. `quote=True` makes it a reply to the
+		incoming message (or the one the pressed button is on)."""
+		return await self.bot.send_message(text, keyboard=keyboard, reply_to=self._quoted(quote), **self._target())
+
+	async def reply_file(
+		self,
+		source: FileSource,
+		*,
+		kind: FileKind = "file",
+		filename: str | None = None,
+		caption: str | None = None,
+		keyboard: Keyboard | None = None,
+		quote: bool = False,
+	) -> Message:
+		"""Sends a photo (kind="image"), video, audio or file where the event
+		happened. `source`: bytes, a path or a binary file object."""
+		return await self.bot.send_file(
+			source,
+			kind=kind,
+			filename=filename,
+			caption=caption,
+			keyboard=keyboard,
+			reply_to=self._quoted(quote),
+			**self._target(),
+		)
 
 	async def reply_document(self, content: bytes, filename: str, caption: str | None = None) -> Message:
-		return await self.bot.send_document(content, filename, caption=caption, **self._target())
+		return await self.reply_file(content, kind="file", filename=filename, caption=caption)
+
+	@asynccontextmanager
+	async def typing(self, every: float = 4.0) -> AsyncIterator[None]:
+		"""Shows "typing…" while the block runs (renewed every `every` s):
+
+		async with ctx.typing():
+			answer = await slow_thing()
+		"""
+		message = self.message
+		if message is None:
+			yield
+			return
+		chat_id = message.chat_id
+
+		async def keep_typing() -> None:
+			while True:
+				try:
+					await self.bot.send_typing(chat_id)
+				except BotApiError as exc:
+					logger.debug("send_typing failed: %s", exc)
+				await asyncio.sleep(every)
+
+		task = asyncio.create_task(keep_typing())
+		try:
+			yield
+		finally:
+			task.cancel()
 
 	async def send_private(self, text: str, keyboard: Keyboard | None = None) -> Message:
 		"""Sends to the person's private chat with the bot, even from a group

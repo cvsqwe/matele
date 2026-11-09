@@ -5,7 +5,8 @@ a reply always goes back through the same messenger."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
+from pathlib import Path
+from typing import IO, Literal, Protocol
 
 MAX = "max"
 TELEGRAM = "telegram"
@@ -13,6 +14,10 @@ TELEGRAM = "telegram"
 # Normalised chat types (each transport maps its own onto these).
 PRIVATE = "private"
 GROUP = "group"
+
+# A file to send: its bytes, a path, or a binary file object (streamed).
+FileSource = bytes | Path | IO[bytes]
+FileKind = Literal["image", "video", "audio", "file"]
 
 
 @dataclass
@@ -129,7 +134,27 @@ class BotClient(Protocol):
 		chat_id: int | None = None,
 		user_id: int | None = None,
 		keyboard: Keyboard | None = None,
+		reply_to: str | None = None,
 	) -> Message: ...
+
+	async def send_file(
+		self,
+		source: FileSource,
+		*,
+		kind: FileKind = "file",
+		filename: str | None = None,
+		chat_id: int | None = None,
+		user_id: int | None = None,
+		caption: str | None = None,
+		keyboard: Keyboard | None = None,
+		reply_to: str | None = None,
+	) -> Message:
+		"""Uploads and sends a photo (kind="image"), video, audio or any file."""
+		...
+
+	async def send_typing(self, chat_id: int) -> None:
+		"""Shows "typing…" in the chat for a few seconds."""
+		...
 
 	async def edit_message(self, message_id: str, text: str | None, *, keyboard: Keyboard | None = None) -> None: ...
 

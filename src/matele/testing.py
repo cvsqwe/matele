@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from matele.callbacks import CallbackData
 from matele.errors import BotApiError
@@ -31,6 +32,8 @@ from matele.types import (
 	CallbackQuery,
 	ChatMemberUpdate,
 	ChatStatus,
+	FileKind,
+	FileSource,
 	IncomingEvent,
 	Keyboard,
 	Message,
@@ -43,10 +46,12 @@ from matele.types import (
 class Sent:
 	chat_id: int | None  # set when sent to a chat (group)
 	user_id: int | None  # set when sent to a person's private chat
-	text: str | None
+	text: str | None  # the message text, or a file's caption
 	keyboard: Keyboard | None
 	message: Message
-	document: tuple[str, bytes] | None = None  # (filename, content)
+	document: tuple[str, bytes] | None = None  # (filename, content) of a sent file
+	kind: str | None = None  # "image", "video", "audio", "file" for a sent file
+	reply_to: str | None = None
 
 
 @dataclass
@@ -73,6 +78,7 @@ class FakeBot:
 	edits: list[Edit] = field(default_factory=list)
 	deleted: list[str] = field(default_factory=list)
 	answers: list[Answer] = field(default_factory=list)
+	typing: list[int] = field(default_factory=list)  # chat ids "typing…" was shown in
 	closed: bool = False
 
 	def __post_init__(self) -> None:
@@ -166,11 +172,40 @@ class FakeBot:
 		chat_id: int | None = None,
 		user_id: int | None = None,
 		keyboard: Keyboard | None = None,
+		reply_to: str | None = None,
 	) -> Message:
 		chat_id, user_id = recipient(chat_id, user_id)
 		message = self._outgoing(chat_id, user_id, text)
-		self.sent.append(Sent(chat_id, user_id, text, keyboard, message))
+		self.sent.append(Sent(chat_id, user_id, text, keyboard, message, reply_to=reply_to))
 		return message
+
+	async def send_file(
+		self,
+		source: FileSource,
+		*,
+		kind: FileKind = "file",
+		filename: str | None = None,
+		chat_id: int | None = None,
+		user_id: int | None = None,
+		caption: str | None = None,
+		keyboard: Keyboard | None = None,
+		reply_to: str | None = None,
+	) -> Message:
+		chat_id, user_id = recipient(chat_id, user_id)
+		if isinstance(source, bytes):
+			content, name = source, filename or "file"
+		elif isinstance(source, Path):
+			content, name = source.read_bytes(), filename or source.name
+		else:
+			content, name = source.read(), filename or "file"
+		token = f"file{self._next_id()}"
+		self._files[token] = (content, name)
+		message = self._outgoing(chat_id, user_id, caption, [Attachment(kind, token, name)])
+		self.sent.append(Sent(chat_id, user_id, caption, keyboard, message, (name, content), kind, reply_to))
+		return message
+
+	async def send_typing(self, chat_id: int) -> None:
+		self.typing.append(chat_id)
 
 	async def edit_message(self, message_id: str, text: str | None, *, keyboard: Keyboard | None = None) -> None:
 		self._require(message_id)
@@ -193,12 +228,9 @@ class FakeBot:
 		user_id: int | None = None,
 		caption: str | None = None,
 	) -> Message:
-		chat_id, user_id = recipient(chat_id, user_id)
-		token = f"file{self._next_id()}"
-		self._files[token] = (content, filename)
-		message = self._outgoing(chat_id, user_id, caption, [Attachment("file", token, filename)])
-		self.sent.append(Sent(chat_id, user_id, caption, None, message, (filename, content)))
-		return message
+		return await self.send_file(
+			content, kind="file", filename=filename, chat_id=chat_id, user_id=user_id, caption=caption
+		)
 
 	async def send_file_by_token(
 		self,
@@ -212,7 +244,7 @@ class FakeBot:
 		chat_id, user_id = recipient(chat_id, user_id)
 		content, filename = await self.download_file(token, file_type=file_type, filename="")
 		message = self._outgoing(chat_id, user_id, caption, [Attachment(file_type, token, filename)])
-		self.sent.append(Sent(chat_id, user_id, caption, None, message, (filename, content)))
+		self.sent.append(Sent(chat_id, user_id, caption, None, message, (filename, content), file_type))
 		return message
 
 	async def download_file(

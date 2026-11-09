@@ -38,6 +38,8 @@ from matele.types import (
 	CallbackQuery,
 	ChatMemberUpdate,
 	ChatStatus,
+	FileKind,
+	FileSource,
 	IncomingEvent,
 	Keyboard,
 	Message,
@@ -197,12 +199,18 @@ class MaxBot:
 		chat_id: int | None = None,
 		user_id: int | None = None,
 		keyboard: Keyboard | None = None,
+		reply_to: str | None = None,
 	) -> Message:
 		chat_id, user_id = recipient(chat_id, user_id)
 		body, keyboard = move_unlinkable_buttons(text, keyboard)
 		attachments = [keyboard_attachment(keyboard)] if keyboard is not None else None
 		sent = await self.api.send_message(
-			chat_id=chat_id, user_id=user_id, text=body, format="html", attachments=attachments
+			chat_id=chat_id,
+			user_id=user_id,
+			text=body,
+			format="html",
+			attachments=attachments,
+			link=_reply_link(reply_to),
 		)
 		return self._message(sent)
 
@@ -235,9 +243,28 @@ class MaxBot:
 		user_id: int | None = None,
 		caption: str | None = None,
 	) -> Message:
+		return await self.send_file(
+			content, kind="file", filename=filename, chat_id=chat_id, user_id=user_id, caption=caption
+		)
+
+	async def send_file(
+		self,
+		source: FileSource,
+		*,
+		kind: FileKind = "file",
+		filename: str | None = None,
+		chat_id: int | None = None,
+		user_id: int | None = None,
+		caption: str | None = None,
+		keyboard: Keyboard | None = None,
+		reply_to: str | None = None,
+	) -> Message:
 		chat_id, user_id = recipient(chat_id, user_id)
-		attachment = await self.api.upload(content, type="file", filename=filename)
-		return await self._send_attachment(attachment, chat_id, user_id, caption)
+		attachment = await self.api.upload(source, type=kind, filename=filename or "file")
+		return await self._send_attachment(attachment, chat_id, user_id, caption, keyboard, reply_to)
+
+	async def send_typing(self, chat_id: int) -> None:
+		await self.api.send_action(chat_id, "typing_on")
 
 	async def send_file_by_token(
 		self,
@@ -252,14 +279,25 @@ class MaxBot:
 		return await self._send_attachment(_attachment_by_token(file_type, token), chat_id, user_id, caption)
 
 	async def _send_attachment(
-		self, attachment: m.AttachmentRequest, chat_id: int | None, user_id: int | None, caption: str | None
+		self,
+		attachment: m.AttachmentRequest,
+		chat_id: int | None,
+		user_id: int | None,
+		caption: str | None,
+		keyboard: Keyboard | None = None,
+		reply_to: str | None = None,
 	) -> Message:
+		caption, keyboard = move_unlinkable_buttons(caption, keyboard)
+		attachments = [attachment]
+		if keyboard is not None:
+			attachments.append(keyboard_attachment(keyboard))
 		sent = await self.api.send_message(
 			chat_id=chat_id,
 			user_id=user_id,
 			text=caption,
 			format="html" if caption else None,
-			attachments=[attachment],
+			attachments=attachments,
+			link=_reply_link(reply_to),
 		)
 		return self._message(sent)
 
@@ -283,6 +321,10 @@ def _attachment(att: m.Attachment) -> Attachment | None:
 		return None
 	filename = getattr(att, "filename", None) or _DEFAULT_FILENAMES[att.type]
 	return Attachment(type=att.type, token=token, filename=filename, url=getattr(payload, "url", None))
+
+
+def _reply_link(reply_to: str | None) -> m.NewMessageLink | None:
+	return m.NewMessageLink(type="reply", mid=reply_to) if reply_to else None
 
 
 def _attachment_by_token(file_type: str, token: str) -> m.AttachmentRequest:
