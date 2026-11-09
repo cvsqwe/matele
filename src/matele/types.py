@@ -4,6 +4,7 @@ a reply always goes back through the same messenger."""
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Literal, Protocol
@@ -15,6 +16,8 @@ TELEGRAM = "telegram"
 PRIVATE = "private"
 GROUP = "group"
 
+_START_PARAM = re.compile(r"^[A-Za-z0-9_-]{0,512}$")
+
 # A file to send: its bytes, a path, or a binary file object (streamed).
 FileSource = bytes | Path | IO[bytes]
 FileKind = Literal["image", "video", "audio", "file"]
@@ -25,6 +28,13 @@ class Button:
 	text: str
 	data: str | None = None  # callback payload
 	url: str | None = None  # link button
+	# Opens the bot's mini app; the value is the start parameter the app
+	# gets ("" for none). Letters, digits, "_" and "-", up to 512.
+	app: str | None = None
+
+	def __post_init__(self) -> None:
+		if self.app is not None and not _START_PARAM.match(self.app):
+			raise ValueError("Button(app=...) takes up to 512 of A-Z, a-z, 0-9, _ and -")
 
 
 @dataclass

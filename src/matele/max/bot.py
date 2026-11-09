@@ -46,6 +46,7 @@ from matele.types import (
 	User,
 	recipient,
 )
+from matele.webapp import DEFAULT_MAX_AGE, WebAppData, verify_init_data
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,7 @@ class MaxBot:
 		"""`platform` is the name events carry (and FSM keys use); keep the
 		default unless you need it to match ids stored by older code."""
 		self.api = api or MaxApi(token, base_url=base_url)
+		self._token = token
 		self.platform = platform
 		self.me: User | None = None
 		self._marker: int | None = None
@@ -203,7 +205,7 @@ class MaxBot:
 	) -> Message:
 		chat_id, user_id = recipient(chat_id, user_id)
 		body, keyboard = move_unlinkable_buttons(text, keyboard)
-		attachments = [keyboard_attachment(keyboard)] if keyboard is not None else None
+		attachments = [keyboard_attachment(keyboard, self.me)] if keyboard is not None else None
 		sent = await self.api.send_message(
 			chat_id=chat_id,
 			user_id=user_id,
@@ -217,7 +219,9 @@ class MaxBot:
 	async def edit_message(self, message_id: str, text: str | None, *, keyboard: Keyboard | None = None) -> None:
 		new_text, keyboard = move_unlinkable_buttons(text, keyboard)
 		# An empty list removes the old keyboard: an edit without one drops it.
-		attachments: list[m.AttachmentRequest] = [keyboard_attachment(keyboard)] if keyboard is not None else []
+		attachments: list[m.AttachmentRequest] = (
+			[keyboard_attachment(keyboard, self.me)] if keyboard is not None else []
+		)
 		await self.api.edit_message(message_id, text=new_text, format="html", attachments=attachments)
 
 	async def delete_message(self, message_id: str) -> None:
@@ -263,6 +267,10 @@ class MaxBot:
 		attachment = await self.api.upload(source, type=kind, filename=filename or "file")
 		return await self._send_attachment(attachment, chat_id, user_id, caption, keyboard, reply_to)
 
+	def verify_init_data(self, init_data: str, *, max_age: float | None = DEFAULT_MAX_AGE) -> WebAppData:
+		"""Checks initData from this bot's mini app (see matele.webapp)."""
+		return verify_init_data(init_data, self._token, platform=self.platform, max_age=max_age)
+
 	async def send_typing(self, chat_id: int) -> None:
 		await self.api.send_action(chat_id, "typing_on")
 
@@ -293,7 +301,7 @@ class MaxBot:
 		caption, keyboard = move_unlinkable_buttons(caption, keyboard)
 		attachments = [attachment]
 		if keyboard is not None:
-			attachments.append(keyboard_attachment(keyboard))
+			attachments.append(keyboard_attachment(keyboard, self.me))
 		sent = await self.api.send_message(
 			chat_id=chat_id,
 			user_id=user_id,
@@ -337,12 +345,19 @@ def _attachment_by_token(file_type: str, token: str) -> m.AttachmentRequest:
 	return cls(payload=m.UploadedInfo(token=token))
 
 
-def keyboard_attachment(keyboard: Keyboard) -> m.InlineKeyboardAttachmentRequest:
-	rows: list[list[m.Button]] = [[_button(b) for b in row] for row in keyboard.rows]
+def keyboard_attachment(keyboard: Keyboard, bot: User | None = None) -> m.InlineKeyboardAttachmentRequest:
+	"""`bot`: the bot itself, needed for mini app buttons (they point at the
+	bot whose mini app to open)."""
+	rows: list[list[m.Button]] = [[_button(b, bot) for b in row] for row in keyboard.rows]
 	return m.InlineKeyboardAttachmentRequest(payload=m.InlineKeyboardAttachmentRequestPayload(buttons=rows))
 
 
-def _button(button: Button) -> m.Button:
+def _button(button: Button, bot: User | None = None) -> m.Button:
+	if button.app is not None:
+		if bot is None or not bot.username:
+			raise ValueError("mini app buttons need the bot's own name: call get_me() first (polling and webhooks do)")
+		# The app's address is set in the bot's settings on business.max.ru.
+		return m.OpenAppButton(text=button.text, web_app=bot.username, contact_id=bot.id, payload=button.app or None)
 	if button.url is not None:
 		return m.LinkButton(text=button.text, url=button.url)
 	return m.CallbackButton(text=button.text, payload=button.data or "noop")

@@ -32,6 +32,7 @@ import logging
 import os
 import time
 from typing import Any, Protocol
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from matele.errors import BotApiError, ConnectionGuard
 from matele.telegram.api import DEFAULT_API_URL, InputFile, TelegramApi, api_error
@@ -52,6 +53,7 @@ from matele.types import (
 	User,
 	recipient,
 )
+from matele.webapp import DEFAULT_MAX_AGE, WebAppData, verify_init_data
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +85,12 @@ def _target(chat_id: int | None, user_id: int | None) -> int:
 	"""On Telegram a private chat's id is the person's id: one address."""
 	chat_id, user_id = recipient(chat_id, user_id)
 	return chat_id if chat_id is not None else user_id  # type: ignore[return-value]
+
+
+def _with_query(url: str, **params: str) -> str:
+	parts = urlsplit(url)
+	query = parse_qsl(parts.query, keep_blank_values=True) + list(params.items())
+	return urlunsplit(parts._replace(query=urlencode(query)))
 
 
 def _is_benign(exc: BotApiError, *needles: str) -> bool:
@@ -165,8 +173,13 @@ class TelegramBot:
 		proxy: str | None = None,
 		aliases: CallbackAliases | None = None,
 		platform: str = TELEGRAM,
+		app_url: str | None = None,
 	):
+		"""`app_url`: the https address of the bot's mini app, for
+		Button(app=...); the button's value is added as ?startapp=..."""
 		self.api = api or TelegramApi(token, api_url=api_url, proxy=proxy)
+		self._token = token
+		self.app_url = app_url
 		self.aliases = aliases or CallbackAliases()
 		self.platform = platform
 		self.me: User | None = None
@@ -341,6 +354,11 @@ class TelegramBot:
 		return int(chat_id), int(mid)
 
 	def _button(self, button: Button) -> dict[str, Any]:
+		if button.app is not None:
+			if not self.app_url:
+				raise ValueError("mini app buttons need TelegramBot(app_url=...)")
+			url = _with_query(self.app_url, startapp=button.app) if button.app else self.app_url
+			return {"text": button.text, "web_app": {"url": url}}
 		if button.url is not None:
 			if button.url.startswith(("http://", "https://", "tg://")):
 				return {"text": button.text, "url": button.url}
@@ -476,6 +494,10 @@ class TelegramBot:
 		}
 		await self.aliases.flush()
 		return await self._send_with_caption(method, params, caption=caption, supports_caption=supports_caption)
+
+	def verify_init_data(self, init_data: str, *, max_age: float | None = DEFAULT_MAX_AGE) -> WebAppData:
+		"""Checks initData from this bot's mini app (see matele.webapp)."""
+		return verify_init_data(init_data, self._token, platform=self.platform, max_age=max_age)
 
 	async def send_typing(self, chat_id: int) -> None:
 		await self.api.call("sendChatAction", chat_id=chat_id, action="typing")
