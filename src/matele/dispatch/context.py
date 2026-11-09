@@ -182,6 +182,15 @@ class Context:
 		finally:
 			task.cancel()
 
+	async def show(
+		self, text: str, keyboard: Keyboard | None = None, *, toast: str | None = None, keep_input: bool = False
+	) -> Message | None:
+		"""Shows a screen in the person's single menu message (see
+		matele.dispatch.panel): edits it instead of sending a new one."""
+		from matele.dispatch.panel import show
+
+		return await show(self, text, keyboard, toast=toast, keep_input=keep_input)
+
 	async def send_private(self, text: str, keyboard: Keyboard | None = None) -> Message:
 		"""Sends to the person's private chat with the bot, even from a group
 		(fails if they never started the bot)."""

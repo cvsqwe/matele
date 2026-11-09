@@ -85,6 +85,7 @@ class FakeBot:
 	def __post_init__(self) -> None:
 		self.me: User | None = User(id=self.bot_id, platform=self.platform, name=self.title, username=self.username)
 		self._ids = itertools.count(1)
+		self._callback_ids = itertools.count(1)  # presses don't take message numbers
 		self._queue: asyncio.Queue[IncomingEvent] = asyncio.Queue()
 		self._files: dict[str, tuple[bytes, str]] = {}
 		self._live: set[str] = set()  # message ids that exist (can be edited/deleted)
@@ -119,7 +120,7 @@ class FakeBot:
 		"""A person pressing a button (with this payload) on `message`."""
 		raw = data.pack() if isinstance(data, CallbackData) else data
 		return CallbackQuery(
-			id=f"cb{self._next_id()}", data=raw, from_user=self.user(user_id), message=message, bot=self
+			id=f"cb{next(self._callback_ids)}", data=raw, from_user=self.user(user_id), message=message, bot=self
 		)
 
 	def blocked(self, *, user_id: int = 1, reachable: bool = False) -> ChatStatus:
@@ -258,6 +259,10 @@ class FakeBot:
 			raise BotApiError(404, "file.not.found", f"no file {token}", platform=self.platform)
 		content, stored_name = self._files[token]
 		return content, filename or stored_name
+
+	def message_sequence(self, message_id: str) -> int | None:
+		"""FakeBot numbers all messages in one sequence, like Telegram does per chat."""
+		return int(message_id) if message_id.isdigit() else None
 
 	# ------------------------------------------------------------ internals
 	def _next_id(self) -> str:

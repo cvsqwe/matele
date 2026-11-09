@@ -346,6 +346,14 @@ class TelegramBot:
 		)
 
 	# ------------------------------------------------------------ outgoing
+	def message_sequence(self, message_id: str) -> int | None:
+		"""Telegram numbers messages within a chat: menus use it to tell
+		whether one message is right above another."""
+		try:
+			return self.split_id(message_id)[1]
+		except (BotApiError, ValueError):
+			return None
+
 	@staticmethod
 	def split_id(message_id: str) -> tuple[int, int]:
 		chat_id, _, mid = message_id.partition(":")
