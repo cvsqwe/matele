@@ -6,27 +6,33 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python: ["3.11", "3.12", "3.13"]
+        include:
+          - os: windows-latest
+            python: "3.13"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
           cache: pip
-      - run: pip install -e '.[dev]'
+      - run: pip install -e ".[dev]"
       - name: Lint
         run: ruff check src tests tools examples
       - name: Formatting (tabs, see .editorconfig)
         run: ruff format --check src tests tools examples
       - name: Types
-        if: matrix.python == '3.12'
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
         run: basedpyright --pythonpath "$(which python)"
-      - run: python -m pytest -q
+      - name: Tests
+        run: python -m pytest -q --cov=matele --cov-report=term-missing:skip-covered --cov-fail-under=90
       - name: Generated MAX models match the schema
-        if: matrix.python == '3.12'
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
         run: |
           python tools/gen_max_models.py
           git diff --exit-code src/matele/max/models.py

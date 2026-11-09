@@ -97,7 +97,9 @@ async def test_sqlite_alias_store(tmp_path, monkeypatch):
 	aliases = CallbackAliases(store)
 	alias = aliases.encode("report:" + "x" * 100)
 	await aliases.flush()
-	assert await CallbackAliases(SQLiteStorage(tmp_path / "bot.db").aliases()).decode(alias) == "report:" + "x" * 100
+	reopened = SQLiteStorage(tmp_path / "bot.db")
+	assert await CallbackAliases(reopened.aliases()).decode(alias) == "report:" + "x" * 100
+	await reopened.close()
 
 	now = 1_000_000.0
 	monkeypatch.setattr("matele.fsm.sqlite.time.time", lambda: now)
