@@ -185,6 +185,21 @@ class TelegramBot:
 	def deep_link(self, username: str, payload: str) -> str:
 		return f"https://t.me/{username}?start={payload}" if payload else f"https://t.me/{username}"
 
+	# ------------------------------------------------------------ webhooks
+	secret_header = "X-Telegram-Bot-Api-Secret-Token"
+
+	async def set_webhook(self, url: str, *, secret: str | None = None) -> None:
+		"""Makes Telegram deliver updates to `url` (https on 443, 80, 88 or 8443)."""
+		await self.api.call("setWebhook", url=url, secret_token=secret, allowed_updates=ALLOWED_UPDATES)
+		self._webhook_cleared = False
+
+	async def delete_webhook(self, url: str | None = None) -> None:
+		await self.api.call("deleteWebhook")
+
+	async def parse_webhook(self, data: dict[str, Any]) -> list[IncomingEvent]:
+		"""A webhook request body (one Telegram update) -> matele events."""
+		return await self.parse_update(data)
+
 	# ------------------------------------------------------------ incoming
 	async def get_events(self, timeout: int = 30) -> list[IncomingEvent]:
 		if not self._webhook_cleared:

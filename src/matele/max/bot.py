@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import html
 import logging
+from typing import Any
 from urllib.parse import urlsplit
 
 from matele.errors import BotForbiddenError, ConnectionGuard
@@ -78,6 +79,21 @@ class MaxBot:
 
 	def deep_link(self, username: str, payload: str) -> str:
 		return f"https://max.ru/{username}?start={payload}" if payload else f"https://max.ru/{username}"
+
+	# ------------------------------------------------------------ webhooks
+	secret_header = "X-Max-Bot-Api-Secret"
+
+	async def set_webhook(self, url: str, *, secret: str | None = None) -> None:
+		"""Subscribes `url` to this bot's updates (MAX requires https on port 443)."""
+		await self.api.subscribe(url, secret=secret)
+
+	async def delete_webhook(self, url: str) -> None:
+		await self.api.unsubscribe(url)
+
+	async def parse_webhook(self, data: dict[str, Any]) -> list[IncomingEvent]:
+		"""A webhook request body (one MAX update) -> matele events."""
+		event = self.parse_update(m.Update.from_dict(data))
+		return [event] if event is not None else []
 
 	# ------------------------------------------------------------ incoming
 	async def get_events(self, timeout: int = 30) -> list[IncomingEvent]:

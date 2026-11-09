@@ -1,0 +1,214 @@
+"""Webhooks: messengers push updates to your HTTPS server instead of the
+bot polling for them.
+
+	dp = Dispatcher()
+	webhook = Webhook(dp, base_url="https://bot.example.com")
+	webhook.add(MaxBot(MAX_TOKEN), "/max")
+	webhook.add(TelegramBot(TG_TOKEN), "/telegram")
+
+	# any ASGI server:   uvicorn app:webhook --port 8080
+	# or, with uvicorn installed (pip install matele[webhook]):
+	webhook.run(port=8080)
+
+`Webhook` is a plain ASGI application (no framework needed). On startup it
+registers `base_url + path` with each messenger, with a random secret that
+every request must carry; on shutdown it waits for the events still being
+handled. Mount it in an existing ASGI app, or call `handle()` yourself
+from any web framework.
+
+Requests are answered with 200 right away and the events handled in the
+background (messengers retry slow webhooks), in order per person.
+
+Requirements from the messengers: a public https URL with a valid
+certificate; MAX accepts only port 443, Telegram 443, 80, 88 or 8443.
+Put a reverse proxy (nginx, Caddy) in front if the app listens elsewhere.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hmac
+import json
+import logging
+import re
+import secrets
+from collections.abc import Awaitable, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Protocol
+
+from matele.dispatch.polling import KeyedLocks
+from matele.types import IncomingEvent, User
+
+if TYPE_CHECKING:
+	from matele.dispatch.dispatcher import Dispatcher
+
+logger = logging.getLogger(__name__)
+
+MAX_BODY = 4 * 1024 * 1024  # an update is a few KB; anything this big is not one
+_SECRET_RE = re.compile(r"^[A-Za-z0-9_-]{5,256}$")  # what both MAX and Telegram accept
+
+Scope = dict[str, Any]
+Receive = Callable[[], Awaitable[dict[str, Any]]]
+Send = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+class WebhookTransport(Protocol):
+	"""What a transport needs for webhooks (MaxBot and TelegramBot have it)."""
+
+	platform: str
+	title: str
+	secret_header: str
+	me: User | None
+
+	async def get_me(self) -> User: ...
+
+	async def close(self) -> None: ...
+
+	async def set_webhook(self, url: str, *, secret: str | None = None) -> None: ...
+
+	async def delete_webhook(self, url: str) -> None: ...
+
+	async def parse_webhook(self, data: dict[str, Any]) -> list[IncomingEvent]: ...
+
+
+class Webhook:
+	def __init__(
+		self,
+		dp: Dispatcher,
+		*,
+		base_url: str | None = None,
+		secret: str | None = None,
+		delete_on_shutdown: bool = False,
+		close_bots: bool = True,
+	):
+		"""`base_url`: the public https address the routes are under; without
+		it the webhooks are not registered on startup (do it yourself).
+		`secret`: checked on every request; random by default."""
+		if secret is not None and not _SECRET_RE.match(secret):
+			raise ValueError("secret must be 5-256 characters: A-Z, a-z, 0-9, _ and -")
+		self.dp = dp
+		self.base_url = base_url.rstrip("/") if base_url else None
+		self.secret = secret or secrets.token_urlsafe(32)
+		self.delete_on_shutdown = delete_on_shutdown
+		self.close_bots = close_bots
+		self.routes: dict[str, WebhookTransport] = {}
+		self._locks = KeyedLocks()
+		self._running: set[asyncio.Task[None]] = set()
+
+	def add(self, bot: WebhookTransport, path: str) -> None:
+		if not path.startswith("/"):
+			raise ValueError(f"path must start with '/': {path!r}")
+		if path in self.routes:
+			raise ValueError(f"{path!r} is already used by {self.routes[path].title}")
+		self.routes[path] = bot
+
+	# ------------------------------------------------------------ lifecycle
+	async def startup(self) -> None:
+		"""Learns each bot's identity and registers the webhooks (if base_url is set)."""
+		self.dp.freeze()
+		for path, bot in self.routes.items():
+			me = await bot.get_me()
+			if self.base_url:
+				await bot.set_webhook(self.base_url + path, secret=self.secret)
+				logger.info("%s: webhook for @%s at %s%s", bot.title, me.username, self.base_url, path)
+
+	async def shutdown(self, timeout: float = 10.0) -> None:
+		"""Waits (up to `timeout` s) for events being handled, then cancels the rest."""
+		if self._running:
+			_, pending = await asyncio.wait(set(self._running), timeout=timeout)
+			for task in pending:
+				task.cancel()
+			if pending:
+				await asyncio.gather(*pending, return_exceptions=True)
+		for path, bot in self.routes.items():
+			if self.delete_on_shutdown and self.base_url:
+				try:
+					await bot.delete_webhook(self.base_url + path)
+				except Exception:
+					logger.exception("%s: could not delete the webhook", bot.title)
+			if self.close_bots:
+				await bot.close()
+		await self.dp.storage.close()
+
+	# ------------------------------------------------------------ requests
+	async def handle(self, path: str, headers: Mapping[str, str], body: bytes) -> int:
+		"""Handles one webhook request; returns the HTTP status to answer.
+		`headers` keys are matched case-insensitively."""
+		bot = self.routes.get(path)
+		if bot is None:
+			return 404
+		lowered = {k.lower(): v for k, v in headers.items()}
+		given = lowered.get(bot.secret_header.lower(), "")
+		if not hmac.compare_digest(given.encode(), self.secret.encode()):
+			logger.warning("%s: webhook request with a wrong secret", bot.title)
+			return 403
+		try:
+			data = json.loads(body)
+		except ValueError:
+			return 400
+		if not isinstance(data, dict):
+			return 400
+		try:
+			events = await bot.parse_webhook(data)
+		except Exception:  # a broken update must not make the messenger retry it forever
+			logger.exception("%s: could not parse a webhook update: %r", bot.title, data)
+			return 200
+		for event in events:
+			task = asyncio.create_task(self._feed(event))
+			self._running.add(task)
+			task.add_done_callback(self._running.discard)
+		return 200
+
+	async def _feed(self, event: IncomingEvent) -> None:
+		async with self._locks.hold(self.dp.storage_key(event)):
+			await self.dp.feed(event)
+
+	# ------------------------------------------------------------ ASGI
+	async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+		if scope["type"] == "lifespan":
+			await self._lifespan(receive, send)
+			return
+		if scope["type"] != "http":
+			return
+		if scope["method"] != "POST":
+			await _respond(send, 405 if scope["path"] in self.routes else 404)
+			return
+		body = bytearray()
+		while True:
+			message = await receive()
+			body += message.get("body", b"")
+			if len(body) > MAX_BODY:
+				await _respond(send, 413)
+				return
+			if not message.get("more_body"):
+				break
+		headers = {k.decode("latin-1"): v.decode("latin-1") for k, v in scope.get("headers", [])}
+		await _respond(send, await self.handle(scope["path"], headers, bytes(body)))
+
+	async def _lifespan(self, receive: Receive, send: Send) -> None:
+		while True:
+			message = await receive()
+			if message["type"] == "lifespan.startup":
+				try:
+					await self.startup()
+				except Exception as exc:
+					logger.exception("Webhook startup failed")
+					await send({"type": "lifespan.startup.failed", "message": str(exc)})
+					return
+				await send({"type": "lifespan.startup.complete"})
+			elif message["type"] == "lifespan.shutdown":
+				await self.shutdown()
+				await send({"type": "lifespan.shutdown.complete"})
+				return
+
+	def run(self, host: str = "0.0.0.0", port: int = 8080, **uvicorn_options: Any) -> None:
+		"""Serves the webhook with uvicorn (`pip install matele[webhook]`)."""
+		try:
+			import uvicorn
+		except ImportError:
+			raise RuntimeError("Webhook.run() needs uvicorn: pip install matele[webhook]") from None
+		uvicorn.run(self, host=host, port=port, **uvicorn_options)
+
+
+async def _respond(send: Send, status: int) -> None:
+	await send({"type": "http.response.start", "status": status, "headers": [(b"content-length", b"0")]})
+	await send({"type": "http.response.body", "body": b""})
