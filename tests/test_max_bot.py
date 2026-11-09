@@ -43,7 +43,7 @@ def test_parses_messages_buttons_and_lifecycle(bot):
 			),
 		}
 	)
-	event = bot.parse_update(created)
+	(event,) = bot.parse_update(created)
 	assert isinstance(event, Message)
 	assert event.text == "hello" and event.message_id == "mid.1" and event.chat_id == 100
 	assert event.from_user.id == 7 and event.from_user.name == "Ann Lee" and event.from_user.platform == MAX
@@ -52,7 +52,7 @@ def test_parses_messages_buttons_and_lifecycle(bot):
 		("image", "it", "image.jpg"),
 	]
 
-	pressed = bot.parse_update(
+	(pressed,) = bot.parse_update(
 		m.Update.from_dict(
 			{
 				"update_type": "message_callback",
@@ -65,14 +65,15 @@ def test_parses_messages_buttons_and_lifecycle(bot):
 	assert isinstance(pressed, CallbackQuery) and pressed.data == "pick:3"
 	assert pressed.message is not None and pressed.message.message_id == "mid.menu"
 
-	started = bot.parse_update(
+	reachable, started = bot.parse_update(
 		m.Update.from_dict(
 			{"update_type": "bot_started", "timestamp": 1, "chat_id": 100, "user": user(7), "payload": "ref42"}
 		)
 	)
+	assert isinstance(reachable, ChatStatus) and reachable.reachable and reachable.from_user.id == 7
 	assert isinstance(started, Message) and started.text == "/start ref42"
 
-	stopped = bot.parse_update(
+	(stopped,) = bot.parse_update(
 		m.Update.from_dict({"update_type": "bot_stopped", "timestamp": 1, "chat_id": 100, "user": user(7)})
 	)
 	assert isinstance(stopped, ChatStatus) and not stopped.reachable
@@ -88,7 +89,7 @@ def test_parses_messages_buttons_and_lifecycle(bot):
 	],
 )
 def test_updates_that_are_not_routed(bot, raw):
-	assert bot.parse_update(m.Update.from_dict(raw)) is None
+	assert bot.parse_update(m.Update.from_dict(raw)) == []
 
 
 async def test_get_events_keeps_the_marker_and_skips_broken_updates(server, bot):
@@ -108,7 +109,8 @@ async def test_get_events_keeps_the_marker_and_skips_broken_updates(server, bot)
 	events = await bot.get_events(timeout=5)
 	assert [e.text for e in events if isinstance(e, Message)] == ["one", "two"]
 	await bot.get_events(timeout=5)
-	assert server.calls[1].params["marker"] == "55"
+	polls = [c for c in server.calls if c.path == "/updates"]
+	assert "marker" not in polls[0].params and polls[1].params["marker"] == "55"
 
 
 async def test_send_with_keyboard_and_edit_without_one(server, bot):
@@ -208,9 +210,8 @@ async def test_end_to_end_with_the_dispatcher(server, bot):
 		}
 	)
 	for update in (started, pressed):
-		event = bot.parse_update(update)
-		assert event is not None
-		assert await dp.feed(event)
+		for event in bot.parse_update(update):
+			await dp.feed(event)
 	sent, answer, edit = server.calls
 	assert sent.json["text"] == "ref=ref42"
 	assert answer.json == {"notification": "picked 3"}

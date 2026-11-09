@@ -77,10 +77,14 @@ def verify_init_data(
 	if not given:
 		raise InitDataError("no hash")
 
-	check_string = "\n".join(f"{key}={fields[key]}" for key in sorted(fields))
 	secret = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
-	expected = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
-	if not hmac.compare_digest(expected, given.lower()):
+	# Telegram's docs leave open whether its newer `signature` field (for
+	# third-party Ed25519 checks) is part of the hashed data: accept both.
+	# Either way the hash is an HMAC of the bot token, so this is no weaker.
+	variants = [fields]
+	if "signature" in fields:
+		variants.append({k: v for k, v in fields.items() if k != "signature"})
+	if not any(hmac.compare_digest(_hash(secret, variant), given.lower()) for variant in variants):
 		raise InitDataError("wrong signature")
 
 	try:
@@ -104,6 +108,11 @@ def verify_init_data(
 		chat_type=fields.get("chat_type"),
 		fields=fields,
 	)
+
+
+def _hash(secret: bytes, fields: dict[str, str]) -> str:
+	check_string = "\n".join(f"{key}={fields[key]}" for key in sorted(fields))
+	return hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
 
 
 def _json(value: str | None) -> dict[str, Any] | None:

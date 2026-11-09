@@ -130,7 +130,7 @@ def test_max_group_messages_and_members(server):
 	from matele.types import User
 
 	bot.me = User(id=1, platform="max", username="my_bot")
-	msg = bot.parse_update(
+	(msg,) = bot.parse_update(
 		m.Update.from_dict(
 			{"update_type": "message_created", "timestamp": 1, "message": message("hi", chat_type="chat", chat_id=-5)}
 		)
@@ -138,8 +138,12 @@ def test_max_group_messages_and_members(server):
 	assert isinstance(msg, Message) and msg.chat_type == GROUP and msg.chat_id == -5
 
 	def parse(raw):
-		event = bot.parse_update(m.Update.from_dict({"timestamp": 1, "chat_id": -5, "is_channel": False, **raw}))
-		assert event is None or isinstance(event, ChatMemberUpdate)
+		events = bot.parse_update(m.Update.from_dict({"timestamp": 1, "chat_id": -5, "is_channel": False, **raw}))
+		assert len(events) <= 1
+		if not events:
+			return None
+		event = events[0]
+		assert isinstance(event, ChatMemberUpdate)
 		return event
 
 	added = parse({"update_type": "bot_added", "user": user(7)})

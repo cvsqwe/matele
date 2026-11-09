@@ -201,6 +201,17 @@ class BotClient(Protocol):
 	) -> tuple[bytes, str]: ...
 
 
+_DEFAULT_NAMES = {"image": "image.jpg", "video": "video.mp4", "audio": "audio.mp3", "file": "file"}
+
+
+def default_filename(source: FileSource, kind: str) -> str:
+	"""A path keeps its name; bytes and streams get one that tells the
+	messenger what the file is ("image.jpg" for a photo)."""
+	if isinstance(source, Path):
+		return source.name
+	return _DEFAULT_NAMES.get(kind, "file")
+
+
 def recipient(chat_id: int | None, user_id: int | None) -> tuple[int | None, int | None]:
 	"""Checks that exactly one recipient is given (transports call it)."""
 	if (chat_id is None) == (user_id is None):

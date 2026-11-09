@@ -51,6 +51,7 @@ from matele.types import (
 	Keyboard,
 	Message,
 	User,
+	default_filename,
 	recipient,
 )
 from matele.webapp import DEFAULT_MAX_AGE, WebAppData, verify_init_data
@@ -79,6 +80,24 @@ SEND_BY_TYPE = {
 
 _CHAT_TYPES = {"private": PRIVATE, "group": GROUP, "supergroup": GROUP}
 _IN_CHAT = {"creator", "administrator", "member", "restricted"}
+# What a person can send; a message with none of these is a service message.
+_CONTENT = (
+	"text",
+	"caption",
+	"photo",
+	"document",
+	"video",
+	"audio",
+	"voice",
+	"video_note",
+	"animation",
+	"sticker",
+	"contact",
+	"location",
+	"venue",
+	"poll",
+	"dice",
+)
 
 
 def _target(chat_id: int | None, user_id: int | None) -> int:
@@ -249,6 +268,8 @@ class TelegramBot:
 				return []  # channels, anonymous posts
 			if raw.get("new_chat_members") or raw.get("left_chat_member"):
 				return self._membership_messages(raw)
+			if not any(key in raw for key in _CONTENT):
+				return []  # service messages: pinned, title changed, migrated, ...
 			return [self._message(raw)]
 		if "my_chat_member" in update:
 			return self._my_membership(update["my_chat_member"])
@@ -496,7 +517,7 @@ class TelegramBot:
 		method, field, supports_caption = SEND_BY_TYPE[kind]
 		params: dict[str, Any] = {
 			"chat_id": _target(chat_id, user_id),
-			field: InputFile(source, filename),
+			field: InputFile(source, filename or default_filename(source, kind)),
 			"reply_markup": self.markup(keyboard),
 			"reply_parameters": self._reply_parameters(reply_to),
 		}

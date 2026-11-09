@@ -61,6 +61,35 @@ class InputFile:
 		return "file"
 
 
+class _RedactTokens(logging.Filter):
+	"""httpx logs every request URL at INFO, and Telegram's URLs contain the
+	bot token: hide it before the record reaches any handler."""
+
+	def __init__(self) -> None:
+		super().__init__()
+		self.tokens: set[str] = set()
+
+	def filter(self, record: logging.LogRecord) -> bool:
+		if not self.tokens:
+			return True
+		message = record.getMessage()
+		redacted = message
+		for token in self.tokens:
+			redacted = redacted.replace(token, "***")
+		if redacted != message:
+			record.msg, record.args = redacted, ()
+		return True
+
+
+_redact = _RedactTokens()
+for _name in ("httpx", "httpcore"):
+	logging.getLogger(_name).addFilter(_redact)
+
+
+def _rewindable(source: bytes | Path | IO[bytes]) -> bool:
+	return isinstance(source, bytes | Path) or source.seekable()
+
+
 def api_error(status: int, method: str, description: str) -> BotApiError:
 	cls = BotForbiddenError if status == 403 else BotApiError
 	return cls(status, method, description, platform=TELEGRAM)
@@ -79,6 +108,7 @@ class TelegramApi:
 	):
 		if not token:
 			raise ValueError("Telegram bot token is empty")
+		_redact.tokens.add(token)
 		api_url = api_url.rstrip("/")
 		self._api_base = f"{api_url}/bot{token}/"
 		self._file_base = f"{api_url}/file/bot{token}/"
@@ -102,6 +132,8 @@ class TelegramApi:
 		files = {k: v for k, v in params.items() if isinstance(v, InputFile)}
 		probe = method in _PROBES
 		flood_left, retry = FLOOD_RETRIES, 0
+		# A stream that can't be rewound can't be sent twice: no retries then.
+		repeatable = all(_rewindable(f.source) for f in files.values())
 		while True:
 			resp = await self._post(method, params, files, request_timeout, probe)
 			try:
@@ -115,6 +147,8 @@ class TelegramApi:
 			status = int(payload.get("error_code") or resp.status_code)
 			description = str(payload.get("description") or "unknown error")
 			retry_after = (payload.get("parameters") or {}).get("retry_after")
+			if not repeatable:
+				raise api_error(status, method, description)
 			if status == 429 and retry_after and flood_left > 0:
 				flood_left -= 1
 				delay = min(float(retry_after), RETRY_AFTER_CAP)

@@ -172,8 +172,13 @@ class Webhook:
 			return
 		if scope["type"] != "http":
 			return
+		# Mounted under a prefix (e.g. Starlette's Mount("/hooks", webhook)),
+		# the path still includes it: routes are relative to the mount.
+		path, root = scope["path"], scope.get("root_path", "")
+		if root and path.startswith(root):
+			path = path[len(root) :] or "/"
 		if scope["method"] != "POST":
-			await _respond(send, 405 if scope["path"] in self.routes else 404)
+			await _respond(send, 405 if path in self.routes else 404)
 			return
 		body = bytearray()
 		while True:
@@ -185,7 +190,7 @@ class Webhook:
 			if not message.get("more_body"):
 				break
 		headers = {k.decode("latin-1"): v.decode("latin-1") for k, v in scope.get("headers", [])}
-		await _respond(send, await self.handle(scope["path"], headers, bytes(body)))
+		await _respond(send, await self.handle(path, headers, bytes(body)))
 
 	async def _lifespan(self, receive: Receive, send: Send) -> None:
 		while True:

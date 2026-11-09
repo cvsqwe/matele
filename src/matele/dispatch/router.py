@@ -123,8 +123,8 @@ class Router:
 		if description is not None:
 			if not _MENU_NAME.match(ordered[0]):
 				raise ValueError(f"/{ordered[0]}: a command in the menu must be 1-32 of a-z, 0-9, _")
-			if not 1 <= len(description) <= 256:
-				raise ValueError(f"/{ordered[0]}: the description must be 1-256 characters")
+			if not 1 <= len(description) <= 128:  # MAX allows 128, Telegram 256
+				raise ValueError(f"/{ordered[0]}: the description must be 1-128 characters")
 		return self._register(
 			Kind.MESSAGE,
 			filters,

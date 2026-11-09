@@ -71,6 +71,7 @@ async def poll(dp: Dispatcher, client: BotClient, *, timeout: int = 30, max_back
 					me = await client.get_me()
 					log.info("%s: polling as @%s (id %s)", client.title, me.username, me.id)
 					connected = True
+					await dp.publish_commands(client)
 				events = await client.get_events(timeout=timeout)
 			except asyncio.CancelledError:
 				raise

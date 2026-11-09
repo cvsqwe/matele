@@ -27,6 +27,10 @@ The menu's message id is kept in the conversation state (`ctx.state.meta`),
 so it survives `ctx.state.clear()` and, with a persistent storage, restarts.
 Notifications that aren't screens should stay separate messages
 (`ctx.reply`).
+
+In a group everyone sees everyone's menus, and anyone can press their
+buttons: check in the handler who may do what, or keep menus to private
+chats (ChatType(PRIVATE)).
 """
 
 from __future__ import annotations

@@ -44,6 +44,7 @@ from matele.types import (
 	Keyboard,
 	Message,
 	User,
+	default_filename,
 	recipient,
 )
 from matele.webapp import DEFAULT_MAX_AGE, WebAppData, verify_init_data
@@ -66,6 +67,7 @@ class MaxBot:
 		self.platform = platform
 		self.me: User | None = None
 		self._marker: int | None = None
+		self._subscriptions_checked = False
 		# callback_id -> who pressed, so an alert can also go to them as a message
 		self._callback_users: dict[str, int] = {}
 
@@ -96,27 +98,50 @@ class MaxBot:
 
 	async def parse_webhook(self, data: dict[str, Any]) -> list[IncomingEvent]:
 		"""A webhook request body (one MAX update) -> matele events."""
-		event = self.parse_update(m.Update.from_dict(data))
-		return [event] if event is not None else []
+		return self.parse_update(m.Update.from_dict(data))
 
 	# ------------------------------------------------------------ incoming
 	async def get_events(self, timeout: int = 30) -> list[IncomingEvent]:
+		if not self._subscriptions_checked:
+			await self._warn_about_webhooks()
 		result = await self.api.get_updates(marker=self._marker, timeout=timeout, limit=100)
 		if result.marker is not None:
 			self._marker = result.marker
 		events: list[IncomingEvent] = []
 		for update in result.updates:
 			try:
-				event = self.parse_update(update)
+				events.extend(self.parse_update(update))
 			except Exception:
 				logger.exception("Could not parse MAX update: %r", update.raw)
-				continue
-			if event is not None:
-				events.append(event)
 		return events
 
-	def parse_update(self, update: m.Update) -> IncomingEvent | None:
-		"""One MAX update -> a matele event (None for updates not routed)."""
+	async def _warn_about_webhooks(self) -> None:
+		"""While a webhook is subscribed, MAX sends updates there and long
+		polling gets nothing. Not removed automatically: another deployment
+		of the bot may be using it. Checked once: it is only a hint."""
+		self._subscriptions_checked = True
+		try:
+			subscriptions = await self.api.get_subscriptions()
+		except Exception as exc:
+			logger.debug("Could not check MAX webhook subscriptions: %s", exc)
+			return
+		for sub in subscriptions:
+			logger.warning(
+				"MAX sends this bot's updates to the webhook %s, so polling won't get them. "
+				"Remove it with `await bot.delete_webhook(url)` or use matele.webhook.Webhook.",
+				sub.url,
+			)
+
+	def parse_update(self, update: m.Update) -> list[IncomingEvent]:
+		"""One MAX update -> matele events (none for updates not routed)."""
+		event = self._parse(update)
+		if isinstance(update, m.BotStartedUpdate) and event is not None:
+			# Starting the bot again also means it can write to the person
+			# again (Telegram says so with my_chat_member; MAX doesn't).
+			return [ChatStatus(from_user=event.from_user, reachable=True, bot=self), event]
+		return [event] if event is not None else []
+
+	def _parse(self, update: m.Update) -> IncomingEvent | None:
 		if isinstance(update, m.MessageCreatedUpdate):
 			msg = update.message
 			if msg.sender is None or msg.recipient.chat_type not in _CHAT_TYPES:
@@ -264,7 +289,7 @@ class MaxBot:
 		reply_to: str | None = None,
 	) -> Message:
 		chat_id, user_id = recipient(chat_id, user_id)
-		attachment = await self.api.upload(source, type=kind, filename=filename or "file")
+		attachment = await self.api.upload(source, type=kind, filename=filename or default_filename(source, kind))
 		return await self._send_attachment(attachment, chat_id, user_id, caption, keyboard, reply_to)
 
 	def verify_init_data(self, init_data: str, *, max_age: float | None = DEFAULT_MAX_AGE) -> WebAppData:
@@ -275,7 +300,9 @@ class MaxBot:
 		await self.api.send_action(chat_id, "typing_on")
 
 	async def set_commands(self, commands: list[tuple[str, str]]) -> None:
-		await self.api.set_my_commands(m.BotCommand(name=n, description=d) for n, d in commands)
+		if len(commands) > MENU_LIMIT:
+			logger.warning("MAX shows at most %s commands in the menu: the rest are left out", MENU_LIMIT)
+		await self.api.set_my_commands(m.BotCommand(name=n, description=d) for n, d in commands[:MENU_LIMIT])
 
 	async def send_file_by_token(
 		self,
@@ -352,6 +379,10 @@ def keyboard_attachment(keyboard: Keyboard, bot: User | None = None) -> m.Inline
 	return m.InlineKeyboardAttachmentRequest(payload=m.InlineKeyboardAttachmentRequestPayload(buttons=rows))
 
 
+CALLBACK_PAYLOAD_LIMIT = 1024  # MAX's limit on a button's payload
+MENU_LIMIT = 32  # commands MAX shows in the menu
+
+
 def _button(button: Button, bot: User | None = None) -> m.Button:
 	if button.app is not None:
 		if bot is None or not bot.username:
@@ -360,7 +391,12 @@ def _button(button: Button, bot: User | None = None) -> m.Button:
 		return m.OpenAppButton(text=button.text, web_app=bot.username, contact_id=bot.id, payload=button.app or None)
 	if button.url is not None:
 		return m.LinkButton(text=button.text, url=button.url)
-	return m.CallbackButton(text=button.text, payload=button.data or "noop")
+	payload = button.data or "noop"
+	if len(payload) > CALLBACK_PAYLOAD_LIMIT:
+		raise ValueError(
+			f"button {button.text!r}: MAX allows {CALLBACK_PAYLOAD_LIMIT} characters of data, got {len(payload)}"
+		)
+	return m.CallbackButton(text=button.text, payload=payload)
 
 
 def is_linkable(url: str) -> bool:

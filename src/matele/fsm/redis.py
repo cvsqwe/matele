@@ -5,7 +5,8 @@ processes (pip install matele[redis]).
 	dp = Dispatcher(storage=storage)
 
 Each conversation is one JSON value under "<prefix>:<platform>:<user>:<chat>".
-With `ttl`, a conversation nobody touched for that many seconds expires.
+With `ttl`, a conversation whose state hasn't changed for that many
+seconds expires (reading it doesn't extend it).
 """
 
 from __future__ import annotations

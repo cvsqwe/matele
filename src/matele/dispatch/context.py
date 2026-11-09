@@ -172,7 +172,9 @@ class Context:
 			while True:
 				try:
 					await self.bot.send_typing(chat_id)
-				except BotApiError as exc:
+				except asyncio.CancelledError:
+					raise
+				except Exception as exc:  # "typing…" is cosmetic: never break the handler
 					logger.debug("send_typing failed: %s", exc)
 				await asyncio.sleep(every)
 
@@ -181,6 +183,7 @@ class Context:
 			yield
 		finally:
 			task.cancel()
+			await asyncio.gather(task, return_exceptions=True)
 
 	async def show(
 		self, text: str, keyboard: Keyboard | None = None, *, toast: str | None = None, keep_input: bool = False

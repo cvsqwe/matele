@@ -127,11 +127,25 @@ class Dispatcher(Router):
 		return StorageKey(event.from_user.platform, event.from_user.id, event_chat_id(event))
 
 	async def feed(self, event: IncomingEvent) -> bool:
-		"""Processes one event. True if a handler took it. Never raises for
-		handler errors (they go to the error handlers)."""
+		"""Processes one event. True if a handler took it. Never raises:
+		errors (of handlers, middleware or the storage) go to the error
+		handlers, or to the log.
+
+		Feed one person's events one at a time (polling and Webhook do):
+		two events of the same person handled at once would both read the
+		same state and the later save would overwrite the earlier one."""
 		self.freeze()
 		key = self.storage_key(event)
-		state = FSMContext(key, await self.storage.get(key))
+		try:
+			record = await self.storage.get(key)
+		except Exception as exc:
+			# Without the person's state the event can't be routed safely, and
+			# saving a blank state over the real one would lose it: stop here.
+			ctx = self.context_class(event, FSMContext(key))
+			await self._handle_error(ctx, exc)
+			await ctx.answer()
+			return False
+		state = FSMContext(key, record)
 		ctx = self.context_class(event, state)
 		handled = False
 
@@ -261,13 +275,13 @@ class Dispatcher(Router):
 				logger.warning("%s: could not set the command menu: %s", client.title, exc)
 
 	async def start_polling(self, *clients: BotClient, timeout: int = 30) -> None:
-		"""Publishes the command menu, then long-polls every client until cancelled."""
+		"""Long-polls every client until cancelled. The command menu is
+		published once each messenger is first reached."""
 		from matele.dispatch.polling import poll
 
 		if not clients:
 			raise ValueError("start_polling() needs at least one bot client")
 		self.freeze()
-		await self.publish_commands(*clients)
 		await asyncio.gather(*(poll(self, client, timeout=timeout) for client in clients))
 
 	def run_polling(self, *clients: BotClient, timeout: int = 30) -> None:
