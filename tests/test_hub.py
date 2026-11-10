@@ -131,3 +131,21 @@ async def test_a_broadcast_report_keeps_outcomes_not_messages():
 	assert report.delivered == 2 and all(d.message is None for d in report.deliveries)
 	(delivery,) = await hub.send({MAX: 3}, "Заказ готов")
 	assert delivery.message is not None  # a single send still returns what was sent
+
+
+async def test_on_sent_lets_a_broadcast_go_on_after_a_restart():
+	people = [{MAX: 1}, {MAX: 2}, {MAX: 3}]
+	done: set[int] = set()
+
+	async def mark(accounts, deliveries) -> None:
+		if accounts[MAX] == 2:
+			raise RuntimeError("database hiccup")  # logged, the broadcast goes on
+		done.add(accounts[MAX])
+
+	first = FakeBot(platform=MAX)
+	await Hub(first).broadcast(people, "Мы открылись!", concurrency=1, on_sent=mark)
+	assert done == {1, 3} and len(first.sent) == 3
+
+	second = FakeBot(platform=MAX)  # after a restart: only those not marked yet
+	report = await Hub(second).broadcast((p for p in people if p[MAX] not in done), "Мы открылись!")
+	assert report.people == 1 and [s.user_id for s in second.sent] == [2]

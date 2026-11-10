@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 Accounts = Mapping[str, int]  # messenger -> user id
 UnreachableHook = Callable[[str, int, BotApiError], Awaitable[None]]
+SentHook = Callable[[Accounts, list["Delivery"]], Awaitable[None]]
 
 DEFAULT_RATE = 25.0  # messages per second per messenger
 RETRY_ATTEMPTS = 2  # extra tries while a messenger is briefly unreachable
@@ -184,10 +185,17 @@ class Hub:
 		keyboard: Keyboard | None = None,
 		*,
 		concurrency: int = 10,
+		on_sent: SentHook | None = None,
 	) -> BroadcastReport:
 		"""Sends to everyone; the pace is set by the per-messenger rate,
 		`concurrency` only bounds how many people are being sent to at once.
-		`people` is read lazily, so a generator over a database works."""
+		`people` is read lazily, so a generator over a database works.
+
+		`on_sent(accounts, deliveries)` is awaited after each person. Mark
+		the person as done there (in your database), and a broadcast cut
+		short by a restart can go on from where it stopped: run it again
+		over the people not marked yet. A failing hook is logged and doesn't
+		stop the broadcast."""
 		report = BroadcastReport()
 		queue = iter(people)
 
@@ -199,6 +207,11 @@ class Hub:
 				report.deliveries.extend(deliveries)
 				report.people += 1
 				report.reached += any(d.ok for d in deliveries)
+				if on_sent is not None:
+					try:
+						await on_sent(accounts, deliveries)
+					except Exception:
+						logger.exception("on_sent failed")
 
 		await asyncio.gather(*(worker() for _ in range(max(concurrency, 1))))
 		return report
