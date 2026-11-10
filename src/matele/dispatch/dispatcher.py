@@ -143,7 +143,7 @@ class Dispatcher(Router):
 			# saving a blank state over the real one would lose it: stop here.
 			ctx = self.context_class(event, FSMContext(key))
 			await self._handle_error(ctx, exc)
-			await ctx.answer()
+			await self._answer(ctx)
 			return False
 		state = FSMContext(key, record)
 		ctx = self.context_class(event, state)
@@ -168,7 +168,7 @@ class Dispatcher(Router):
 		except Exception as exc:
 			await self._handle_error(ctx, exc)
 		finally:
-			await ctx.answer()
+			await self._answer(ctx)
 			if state.changed:
 				try:
 					if state.record.empty:
@@ -178,6 +178,15 @@ class Dispatcher(Router):
 				except Exception:
 					logger.exception("Could not save the state of %s", key)
 		return handled
+
+	@staticmethod
+	async def _answer(ctx: Context) -> None:
+		"""Stops the button's spinner if the handler didn't. Whatever goes
+		wrong here must not escape feed() or keep the state from being saved."""
+		try:
+			await ctx.answer()
+		except Exception:
+			logger.exception("Could not answer the button press")
 
 	def _chain(self, ctx: Context, route: CallNext) -> CallNext:
 		call = route

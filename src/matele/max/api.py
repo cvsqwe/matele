@@ -163,7 +163,10 @@ class MaxApi:
 					str(err.get("code") or ""),
 					str(err.get("message") or err.get("error") or resp.text[:500]),
 				)
-			data = resp.json() if resp.content else {}
+			try:
+				data = resp.json() if resp.content else {}
+			except ValueError:  # a proxy's or a captive portal's page instead of the API
+				raise api_error(resp.status_code, "bad.response", f"not JSON: {resp.text[:200]!r}") from None
 			if isinstance(data, dict) and data.get("success") is False:
 				raise api_error(resp.status_code, "request.failed", str(data.get("message") or "success: false"))
 			return data

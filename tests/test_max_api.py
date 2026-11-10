@@ -222,3 +222,10 @@ async def test_raw_request_for_uncovered_endpoints(server):
 	server.on("GET", "/new/endpoint", {"anything": 1})
 	assert await server.api().request("GET", "/new/endpoint", params={"a": None, "b": 2}) == {"anything": 1}
 	assert server.calls[0].params == {"b": "2"}
+
+
+async def test_a_non_json_answer_is_an_api_error(server):
+	server.on("GET", "/chats/5", httpx.Response(200, text="<html>Sign in to the network</html>"))
+	with pytest.raises(BotApiError, match="not JSON") as caught:
+		await server.api().get_chat(5)
+	assert caught.value.code == "bad.response"

@@ -248,3 +248,21 @@ async def test_max_polling_warns_about_a_subscribed_webhook(caplog):
 	await bot.get_events(timeout=1)
 	assert "https://old.example.com/max" in caplog.text
 	assert [c.path for c in server.calls].count("/subscriptions") == 1  # checked once
+
+
+async def test_feed_survives_a_failing_button_answer_and_still_saves_the_state():
+	class BrokenAnswers(FakeBot):
+		async def answer_callback(self, callback_id, *, text=None, alert=False):
+			raise ValueError("not JSON")  # not a BotApiError
+
+	dp = Dispatcher(registry=CallbackRegistry())
+	bot = BrokenAnswers()
+
+	@dp.raw_callback()
+	async def press(ctx):
+		ctx.state.update(step=1)
+
+	event = bot.press("x")
+	assert await dp.feed(event) is True  # nothing escapes
+	record = await dp.storage.get(dp.storage_key(event))
+	assert record is not None and record.data == {"step": 1}
