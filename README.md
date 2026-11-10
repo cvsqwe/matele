@@ -4,6 +4,8 @@
 
 Проект на ранней стадии: API ещё может меняться, на PyPI пока не опубликован.
 
+Документация с руководством: https://cvsqwe.github.io/matele/
+
 ## Установка
 
 ```bash
@@ -249,6 +251,13 @@ python -m venv .venv
 .venv/bin/python -m pytest
 .venv/bin/ruff check src tests tools examples
 .venv/bin/basedpyright
+```
+
+Документация лежит в `docs/` и собирается MkDocs:
+
+```bash
+.venv/bin/python -m pip install -e ".[docs]"
+.venv/bin/mkdocs serve
 ```
 
 В коде отступы табами, настройки в `.editorconfig`.

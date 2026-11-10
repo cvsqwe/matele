@@ -1,0 +1,71 @@
+site_name: matele
+site_description: Фреймворк на Python для ботов, которые работают сразу в MAX и Telegram
+site_url: https://cvsqwe.github.io/matele/
+repo_url: https://github.com/cvsqwe/matele
+repo_name: cvsqwe/matele
+edit_uri: edit/main/docs/
+copyright: MIT
+
+theme:
+  name: material
+  language: ru
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: white
+      accent: blue
+      toggle:
+        icon: material/weather-night
+        name: Тёмная тема
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: blue
+      toggle:
+        icon: material/weather-sunny
+        name: Светлая тема
+  features:
+    - content.code.copy
+    - content.action.edit
+    - navigation.footer
+    - navigation.indexes
+    - navigation.sections
+    - search.highlight
+
+extra_css:
+  - stylesheets/extra.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      check_paths: true
+  - pymdownx.superfences
+
+nav:
+  - Главная: index.md
+  - Первый бот: first-bot.md
+  - Руководство:
+      - Хендлеры и контекст: handlers.md
+      - Кнопки: buttons.md
+      - Меню в одном сообщении: menus.md
+      - Состояния: states.md
+      - Групповые чаты: groups.md
+      - Файлы и форматирование: files.md
+      - Тестирование: testing.md
+  - Запуск и интеграции:
+      - Вебхуки: webhooks.md
+      - Мини-приложения: mini-apps.md
+      - Рассылки: broadcasts.md
+      - API мессенджеров: platform-api.md
+  - Изменения: changelog.md

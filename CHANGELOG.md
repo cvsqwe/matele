@@ -17,3 +17,4 @@
 - long polling и вебхуки (ASGI)
 - весь MAX Bot API с моделями из официальной схемы, `TelegramApi.call()` для любого метода Telegram
 - `FakeBot` для тестов без сети
+- документация на сайте https://cvsqwe.github.io/matele/
