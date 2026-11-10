@@ -315,3 +315,31 @@ def test_the_token_is_hidden_in_http_client_logs(tg, caplog, name):
 	with caplog.at_level(logging.DEBUG, logger=name):
 		logging.getLogger(name).debug("POST https://tg.test/bot%s/getMe", TOKEN)
 	assert TOKEN not in caplog.text and "bot***/getMe" in caplog.text
+
+
+async def test_the_alias_cache_is_bounded_and_refilled_from_the_store():
+	class Store:
+		def __init__(self) -> None:
+			self.rows: dict[str, str] = {}
+
+		async def save(self, alias: str, data: str) -> None:
+			self.rows[alias] = data
+
+		async def get(self, alias: str) -> str | None:
+			return self.rows.get(alias)
+
+		async def purge(self, older_than_days: int) -> int:
+			return 0
+
+	aliases = CallbackAliases(Store(), cache_size=2)
+	first, _, third = (aliases.encode(letter * 100) for letter in "abc")
+	await aliases.flush()
+	assert len(aliases._by_alias) == 2 and len(aliases._saved_at) <= 2
+	assert await aliases.decode(first) == "a" * 100  # pushed out of memory, found in the store
+	assert await aliases.decode(third) == "c" * 100
+
+	memory_only = CallbackAliases(cache_size=2)
+	gone = memory_only.encode("a" * 100)
+	memory_only.encode("b" * 100)
+	memory_only.encode("c" * 100)
+	assert await memory_only.decode(gone) is None

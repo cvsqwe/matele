@@ -31,6 +31,7 @@ import hashlib
 import logging
 import os
 import time
+from collections import OrderedDict
 from typing import Any, Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -65,6 +66,7 @@ ALIAS_PREFIX = "~"
 ALIAS_RESAVE_AFTER = 24 * 3600  # refresh a stored alias's timestamp at most daily
 ALIAS_TTL_DAYS = 60
 ALIAS_PURGE_EVERY = 24 * 3600
+ALIAS_CACHE_SIZE = 10_000  # aliases kept in memory
 ALLOWED_UPDATES = ["message", "callback_query", "my_chat_member"]
 
 # attachment type -> (send method, file field, accepts a caption)
@@ -130,11 +132,17 @@ class AliasStore(Protocol):
 
 class CallbackAliases:
 	"""Over-long callback payloads -> short deterministic aliases. With a
-	store, every alias is saved before the message carrying it is sent."""
+	store, every alias is saved before the message carrying it is sent.
 
-	def __init__(self, store: AliasStore | None = None) -> None:
+	Memory holds the `cache_size` most recently used aliases, so a bot with
+	ever-changing long payloads doesn't grow forever. An alias pushed out
+	is read back from the store; without a store its button stops working,
+	like any button from before a restart."""
+
+	def __init__(self, store: AliasStore | None = None, *, cache_size: int = ALIAS_CACHE_SIZE) -> None:
 		self.store = store
-		self._by_alias: dict[str, str] = {}
+		self.cache_size = max(cache_size, 1)
+		self._by_alias: OrderedDict[str, str] = OrderedDict()
 		self._saved_at: dict[str, float] = {}
 		self._unsaved: dict[str, str] = {}
 		self._purged_at: float | None = None
@@ -143,11 +151,18 @@ class CallbackAliases:
 		if len(data.encode("utf-8")) <= CALLBACK_DATA_LIMIT and not data.startswith(ALIAS_PREFIX):
 			return data
 		alias = ALIAS_PREFIX + hashlib.sha1(data.encode("utf-8"), usedforsecurity=False).hexdigest()[:24]
-		self._by_alias[alias] = data
+		self._remember(alias, data)
 		saved = self._saved_at.get(alias)
 		if saved is None or time.monotonic() - saved > ALIAS_RESAVE_AFTER:
 			self._unsaved[alias] = data
 		return alias
+
+	def _remember(self, alias: str, data: str) -> None:
+		self._by_alias[alias] = data
+		self._by_alias.move_to_end(alias)
+		while len(self._by_alias) > self.cache_size:
+			oldest, _ = self._by_alias.popitem(last=False)
+			self._saved_at.pop(oldest, None)
 
 	async def flush(self) -> None:
 		"""Saves aliases encoded since the last flush (and now and then purges
@@ -158,7 +173,8 @@ class CallbackAliases:
 		try:
 			for alias, data in pending.items():
 				await self.store.save(alias, data)
-				self._saved_at[alias] = time.monotonic()
+				if alias in self._by_alias:
+					self._saved_at[alias] = time.monotonic()
 			now = time.monotonic()
 			if self._purged_at is None or now - self._purged_at > ALIAS_PURGE_EVERY:
 				self._purged_at = now
@@ -171,13 +187,15 @@ class CallbackAliases:
 		if data is None or not data.startswith(ALIAS_PREFIX):
 			return data or ""
 		found = self._by_alias.get(data)
-		if found is None and self.store is not None:
+		if found is not None:
+			self._by_alias.move_to_end(data)
+		elif self.store is not None:
 			try:
 				found = await self.store.get(data)
 			except Exception as exc:
 				logger.warning("Could not look up a Telegram callback alias: %s", exc)
 			if found is not None:
-				self._by_alias[data] = found
+				self._remember(data, found)
 		return found
 
 
