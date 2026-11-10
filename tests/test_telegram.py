@@ -293,3 +293,16 @@ async def test_download_by_file_id(bot, tg):
 	tg.ok("getFile", {"file_path": "documents/file_3.pdf"})
 	content, name = await bot.download_file("FID", file_type="file", filename="")
 	assert content == b"FILE:file_3.pdf" and name == "file_3.pdf"
+
+
+async def test_download_refuses_a_file_over_the_limit(tg):
+	api = TelegramApi(
+		TOKEN,
+		api_url="https://tg.test",
+		http=httpx.AsyncClient(transport=httpx.MockTransport(tg.handle)),
+		max_download=5,
+	)
+	with pytest.raises(BotApiError) as caught:
+		await api.download("docs/report.pdf")  # the fake serves b"FILE:report.pdf"
+	assert caught.value.status_code == 413
+	assert await api.download("docs/report.pdf", max_size=100) == b"FILE:report.pdf"

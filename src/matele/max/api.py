@@ -31,6 +31,7 @@ from typing import IO, Any
 import certifi
 import httpx
 
+from matele._http import DEFAULT_MAX_DOWNLOAD, TooLargeError, read_limited
 from matele.errors import BotApiError, BotForbiddenError, BotUnavailableError, ConnectionGuard
 from matele.max import models as m
 from matele.types import MAX
@@ -90,9 +91,12 @@ class MaxApi:
 		http: httpx.AsyncClient | None = None,
 		files_http: httpx.AsyncClient | None = None,
 		guard: ConnectionGuard | None = None,
+		max_download: int | None = DEFAULT_MAX_DOWNLOAD,
 	):
 		"""`http` / `files_http`: bring your own clients (proxies, tests).
-		File hosts (uploads, downloads) never get the bot token."""
+		File hosts (uploads, downloads) never get the bot token.
+		`max_download`: the biggest file download() reads, in bytes (50 MB
+		by default; None for no limit)."""
 		if not token:
 			raise ValueError("MAX bot token is empty")
 		self._own_http = http is None
@@ -103,6 +107,7 @@ class MaxApi:
 		self._base_url = base_url.rstrip("/")
 		self._headers = {"Authorization": token}
 		self.guard = guard or ConnectionGuard(MAX)
+		self.max_download = max_download
 
 	async def close(self) -> None:
 		if self._own_http:
@@ -469,12 +474,23 @@ class MaxApi:
 			result = {}
 		return result if isinstance(result, dict) else {}
 
-	async def download(self, url: str) -> bytes:
-		"""Downloads an attachment by its URL (`attachment.payload.url`)."""
-		resp = await self._files.get(url)
-		if resp.status_code >= 400:
-			raise api_error(resp.status_code, "download.failed", resp.text[:200])
-		return resp.content
+	async def download(self, url: str, *, max_size: int | None = -1) -> bytes:
+		"""Downloads an attachment by its URL (`attachment.payload.url`).
+		The file is read into memory, so a bigger one than `max_size` bytes
+		(by default the client's `max_download`; None for no limit) is
+		refused with a 413 BotApiError instead."""
+		limit = self.max_download if max_size == -1 else max_size
+		try:
+			async with self._files.stream("GET", url) as resp:
+				if resp.status_code >= 400:
+					await resp.aread()
+					raise api_error(resp.status_code, "download.failed", resp.text[:200])
+				try:
+					return await read_limited(resp, limit)
+				except TooLargeError:
+					raise api_error(413, "download.too_large", f"the file is over {limit} bytes") from None
+		except httpx.TransportError as exc:
+			raise BotUnavailableError(0, "network", f"{type(exc).__name__}: {exc}", platform=MAX) from None
 
 
 def _find_token(result: dict[str, Any]) -> str:

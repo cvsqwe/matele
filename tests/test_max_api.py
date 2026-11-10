@@ -229,3 +229,13 @@ async def test_a_non_json_answer_is_an_api_error(server):
 	with pytest.raises(BotApiError, match="not JSON") as caught:
 		await server.api().get_chat(5)
 	assert caught.value.code == "bad.response"
+
+
+async def test_download_refuses_a_file_over_the_limit(server):
+	url = "https://files.test/big"
+	server.on("GET", url, httpx.Response(200, content=b"x" * 2000), httpx.Response(200, content=b"x" * 2000))
+	api = server.api(max_download=1000)
+	with pytest.raises(BotApiError) as caught:
+		await api.download(url)
+	assert caught.value.status_code == 413 and caught.value.code == "download.too_large"
+	assert await api.download(url, max_size=None) == b"x" * 2000

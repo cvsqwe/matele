@@ -30,6 +30,7 @@ from typing import IO, Any
 
 import httpx
 
+from matele._http import DEFAULT_MAX_DOWNLOAD, TooLargeError, read_limited
 from matele.errors import BotApiError, BotForbiddenError, BotUnavailableError, ConnectionGuard
 from matele.types import TELEGRAM
 
@@ -105,7 +106,10 @@ class TelegramApi:
 		proxy: str | None = None,
 		http: httpx.AsyncClient | None = None,
 		guard: ConnectionGuard | None = None,
+		max_download: int | None = DEFAULT_MAX_DOWNLOAD,
 	):
+		"""`max_download`: the biggest file download() reads, in bytes (50 MB
+		by default; None for no limit)."""
 		if not token:
 			raise ValueError("Telegram bot token is empty")
 		_redact.tokens.add(token)
@@ -115,6 +119,7 @@ class TelegramApi:
 		self._own_http = http is None
 		self._http = http or httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0), proxy=proxy)
 		self.guard = guard or ConnectionGuard(TELEGRAM)
+		self.max_download = max_download
 
 	async def close(self) -> None:
 		if self._own_http:
@@ -208,14 +213,21 @@ class TelegramApi:
 		self.guard.ok()
 		return resp
 
-	async def download(self, file_path: str) -> bytes:
-		"""Downloads a file by the `file_path` from getFile (up to 20 MB on the public API)."""
+	async def download(self, file_path: str, *, max_size: int | None = -1) -> bytes:
+		"""Downloads a file by the `file_path` from getFile (the public API
+		serves up to 20 MB). The file is read into memory, so a bigger one
+		than `max_size` bytes (by default the client's `max_download`; None
+		for no limit) is refused with a 413 BotApiError instead."""
+		limit = self.max_download if max_size == -1 else max_size
 		self.guard.check()
 		try:
-			resp = await self._http.get(self._file_base + file_path, timeout=120.0)
+			async with self._http.stream("GET", self._file_base + file_path, timeout=120.0) as resp:
+				if resp.status_code >= 400:
+					raise api_error(resp.status_code, "download", f"HTTP {resp.status_code}")
+				try:
+					return await read_limited(resp, limit)
+				except TooLargeError:
+					raise api_error(413, "download", f"the file is over {limit} bytes") from None
 		except httpx.TransportError as exc:
 			self.guard.failed()
 			raise BotUnavailableError(0, "network", type(exc).__name__, platform=TELEGRAM) from None
-		if resp.status_code >= 400:
-			raise api_error(resp.status_code, "download", f"HTTP {resp.status_code}")
-		return resp.content
