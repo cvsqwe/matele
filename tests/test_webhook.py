@@ -211,3 +211,32 @@ async def test_a_repeated_telegram_update_is_handled_once():
 	assert len(await bot.parse_webhook(update)) == 1
 	assert await bot.parse_webhook(update) == []  # Telegram's retry of the same update
 	assert len(await bot.parse_webhook({"update_id": 78, "message": tg_message("next")})) == 1
+
+
+async def test_an_overloaded_webhook_answers_503_until_there_is_room():
+	dp = Dispatcher(registry=CallbackRegistry())
+	release = asyncio.Event()
+	handled = []
+
+	@dp.message()
+	async def slow(ctx: Context):
+		await release.wait()
+		handled.append(ctx.text)
+
+	webhook = Webhook(dp, secret=SECRET, max_pending=2)
+	webhook.add(TelegramBot(TOKEN, api=FakeTelegram().api()), "/tg")
+	headers = {"X-Telegram-Bot-Api-Secret-Token": SECRET}
+
+	def body(update_id: int) -> bytes:
+		raw = tg_message(f"m{update_id}")
+		raw["from"] = {"id": update_id, "first_name": "U"}
+		return json.dumps({"update_id": update_id, "message": raw}).encode()
+
+	assert await webhook.handle("/tg", headers, body(1)) == 200
+	assert await webhook.handle("/tg", headers, body(2)) == 200
+	assert await webhook.handle("/tg", headers, body(3)) == 503  # full: Telegram will send it again
+	release.set()
+	await asyncio.gather(*webhook._running)
+	assert await webhook.handle("/tg", headers, body(3)) == 200  # the retry is not taken for a repeat
+	await asyncio.gather(*webhook._running)
+	assert sorted(handled) == ["m1", "m2", "m3"]

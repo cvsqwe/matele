@@ -41,6 +41,7 @@ from matele.types import (
 logger = logging.getLogger(__name__)
 
 SHUTDOWN_TIMEOUT = 10.0  # seconds running handlers get to finish on a stop
+CONCURRENCY = 100  # events of one messenger handled at once while polling
 
 CallNext = Callable[[], Awaitable[None]]
 Middleware = Callable[[Any, CallNext], Awaitable[None]]
@@ -325,21 +326,36 @@ class Dispatcher(Router):
 				logger.warning("%s: could not set the command menu: %s", client.title, exc)
 
 	async def start_polling(
-		self, *clients: BotClient, timeout: int = 30, shutdown_timeout: float = SHUTDOWN_TIMEOUT
+		self,
+		*clients: BotClient,
+		timeout: int = 30,
+		shutdown_timeout: float = SHUTDOWN_TIMEOUT,
+		concurrency: int = CONCURRENCY,
 	) -> None:
 		"""Long-polls every client until cancelled. The command menu is
 		published once each messenger is first reached. On cancel, handlers
-		still running get `shutdown_timeout` seconds to finish."""
+		still running get `shutdown_timeout` seconds to finish. At most
+		`concurrency` events per messenger are handled at once; beyond
+		that polling waits, and the messenger keeps the rest."""
 		from matele.dispatch.polling import poll
 
 		if not clients:
 			raise ValueError("start_polling() needs at least one bot client")
 		self.freeze()
 		await asyncio.gather(
-			*(poll(self, client, timeout=timeout, shutdown_timeout=shutdown_timeout) for client in clients)
+			*(
+				poll(self, client, timeout=timeout, shutdown_timeout=shutdown_timeout, concurrency=concurrency)
+				for client in clients
+			)
 		)
 
-	def run_polling(self, *clients: BotClient, timeout: int = 30, shutdown_timeout: float = SHUTDOWN_TIMEOUT) -> None:
+	def run_polling(
+		self,
+		*clients: BotClient,
+		timeout: int = 30,
+		shutdown_timeout: float = SHUTDOWN_TIMEOUT,
+		concurrency: int = CONCURRENCY,
+	) -> None:
 		"""Blocking entry point: polls until Ctrl+C or SIGTERM (what Docker
 		and systemd stop a service with), lets running handlers finish (up
 		to `shutdown_timeout` seconds), then closes the clients and the
@@ -353,7 +369,9 @@ class Dispatcher(Router):
 			except (NotImplementedError, RuntimeError, ValueError):
 				pass  # Windows, or not the main thread: Ctrl+C still works
 			try:
-				await self.start_polling(*clients, timeout=timeout, shutdown_timeout=shutdown_timeout)
+				await self.start_polling(
+					*clients, timeout=timeout, shutdown_timeout=shutdown_timeout, concurrency=concurrency
+				)
 			finally:
 				for client in clients:
 					await client.close()

@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 MAX_BACKOFF = 60.0
 SHUTDOWN_TIMEOUT = 10.0  # the Dispatcher has the same default
+CONCURRENCY = 100  # events of one messenger handled at once
 _sleep = asyncio.sleep  # patched in tests
 
 
@@ -65,19 +66,28 @@ async def poll(
 	timeout: int = 30,
 	max_backoff: float = MAX_BACKOFF,
 	shutdown_timeout: float = SHUTDOWN_TIMEOUT,
+	concurrency: int = CONCURRENCY,
 ) -> None:
 	"""Long-polls one messenger until cancelled; never raises otherwise.
 	On cancel, events still being handled get `shutdown_timeout` seconds
 	to finish; the rest are cancelled (and so is everything on a second
-	cancel)."""
+	cancel).
+
+	At most `concurrency` events are handled at once. When handlers can't
+	keep up, polling waits for a free slot instead of piling up tasks: the
+	messenger keeps the events that weren't asked for yet."""
 	log = logging.getLogger(f"matele.polling.{client.platform}")
 	locks = KeyedLocks()
 	running: set[asyncio.Task[None]] = set()
+	slots = asyncio.Semaphore(max(concurrency, 1))
 
 	async def handle(event: IncomingEvent) -> None:
-		key = dp.storage_key(event)
-		async with locks.hold(key), dp.exclusive(key):
-			await dp.feed(event)
+		try:
+			key = dp.storage_key(event)
+			async with locks.hold(key), dp.exclusive(key):
+				await dp.feed(event)
+		finally:
+			slots.release()
 
 	backoff, connected = 1.0, False
 	try:
@@ -98,6 +108,7 @@ async def poll(
 				continue
 			backoff = 1.0
 			for event in events:
+				await slots.acquire()
 				task = asyncio.create_task(handle(event))
 				running.add(task)
 				task.add_done_callback(running.discard)

@@ -17,7 +17,10 @@ handled. Mount it in an existing ASGI app, or call `handle()` yourself
 from any web framework.
 
 Requests are answered with 200 right away and the events handled in the
-background (messengers retry slow webhooks), in order per person.
+background (messengers retry slow webhooks), in order per person. When
+`max_pending` events are already waiting or being handled, new requests
+get 503 until there is room: the messenger sends them again later,
+instead of the process piling up tasks until it runs out of memory.
 
 Requirements from the messengers: a public https URL with a valid
 certificate; MAX accepts only port 443, Telegram 443, 80, 88 or 8443.
@@ -43,6 +46,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+MAX_PENDING = 1000  # events accepted but not handled yet
 MAX_BODY = 4 * 1024 * 1024  # an update is a few KB; anything this big is not one
 _SECRET_RE = re.compile(r"^[A-Za-z0-9_-]{5,256}$")  # what both MAX and Telegram accept
 
@@ -81,10 +85,13 @@ class Webhook:
 		secret: str | None = None,
 		delete_on_shutdown: bool = False,
 		close_bots: bool = True,
+		max_pending: int = MAX_PENDING,
 	):
 		"""`base_url`: the public https address the routes are under; without
 		it the webhooks are not registered on startup (do it yourself).
-		`secret`: checked on every request; random by default."""
+		`secret`: checked on every request; random by default.
+		`max_pending`: how many accepted events may wait to be handled
+		before new requests are answered 503 (and sent again later)."""
 		if secret is not None and not _SECRET_RE.match(secret):
 			raise ValueError("secret must be 5-256 characters: A-Z, a-z, 0-9, _ and -")
 		self.dp = dp
@@ -92,6 +99,8 @@ class Webhook:
 		self.secret = secret or secrets.token_urlsafe(32)
 		self.delete_on_shutdown = delete_on_shutdown
 		self.close_bots = close_bots
+		self.max_pending = max(max_pending, 1)
+		self._overloaded = False
 		self.routes: dict[str, WebhookTransport] = {}
 		self._locks = KeyedLocks()
 		self._running: set[asyncio.Task[None]] = set()
@@ -139,6 +148,14 @@ class Webhook:
 		if not hmac.compare_digest(given.encode(), self.secret.encode()):
 			logger.warning("%s: webhook request with a wrong secret", bot.title)
 			return 403
+		if len(self._running) >= self.max_pending:
+			if not self._overloaded:  # once per overload, not per request
+				self._overloaded = True
+				logger.warning(
+					"%s events are waiting to be handled: answering 503 until there is room", len(self._running)
+				)
+			return 503
+		self._overloaded = False
 		try:
 			data = json.loads(body)
 		except ValueError:

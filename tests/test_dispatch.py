@@ -543,3 +543,26 @@ async def test_polling_cancels_handlers_that_outlast_the_shutdown_timeout(dp):
 	task.cancel()
 	await asyncio.gather(task, return_exceptions=True)
 	assert cancelled == ["order"]
+
+
+async def test_polling_handles_a_bounded_number_of_events_at_once(dp):
+	bot = FakeBot()
+	now, most, done = 0, 0, 0
+
+	@dp.message()
+	async def slow(ctx):
+		nonlocal now, most, done
+		now += 1
+		most = max(most, now)
+		await asyncio.sleep(0.01)
+		now -= 1
+		done += 1
+
+	for user_id in range(1, 9):
+		bot.push(bot.message("hi", user_id=user_id))
+	task = asyncio.create_task(dp.start_polling(bot, timeout=1, concurrency=3))
+	while done < 8:
+		await asyncio.sleep(0.01)
+	task.cancel()
+	await asyncio.gather(task, return_exceptions=True)
+	assert most == 3
