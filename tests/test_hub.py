@@ -123,3 +123,11 @@ async def test_unreachable_hook_errors_are_logged_not_raised(caplog):
 	(delivery,) = await Hub(FlakyBot(platform=MAX, blocked=frozenset({1})), on_unreachable=broken).send({MAX: 1}, "x")
 	assert not delivery.ok and isinstance(delivery.error, BotApiError)
 	assert "on_unreachable failed" in caplog.text
+
+
+async def test_a_broadcast_report_keeps_outcomes_not_messages():
+	hub = Hub(FakeBot(platform=MAX))
+	report = await hub.broadcast([{MAX: 1}, {MAX: 2}], "Мы открылись!")
+	assert report.delivered == 2 and all(d.message is None for d in report.deliveries)
+	(delivery,) = await hub.send({MAX: 3}, "Заказ готов")
+	assert delivery.message is not None  # a single send still returns what was sent

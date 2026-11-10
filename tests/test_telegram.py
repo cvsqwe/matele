@@ -348,3 +348,16 @@ async def test_the_alias_cache_is_bounded_and_refilled_from_the_store():
 	memory_only.encode("b" * 100)
 	memory_only.encode("c" * 100)
 	assert await memory_only.decode(gone) is None
+
+
+async def test_flood_control_pauses_the_other_calls_too(tg, sleeps):
+	for _ in range(3):  # more 429s than one call retries
+		tg.fail("sendMessage", 429, "Too Many Requests: retry after 7", parameters={"retry_after": 7})
+	api = tg.api()
+	with pytest.raises(BotApiError):
+		await api.call("sendMessage", chat_id=1, text="first")
+	assert sleeps == [7.0, 7.0]
+	await api.call("sendMessage", chat_id=2, text="second")  # waits out the pause before it is sent
+	assert len(sleeps) == 3 and 6 < sleeps[2] <= 7
+	await api.call("getUpdates")  # long polling doesn't wait
+	assert len(sleeps) == 3

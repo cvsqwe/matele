@@ -249,3 +249,14 @@ async def test_slow_answers_do_not_trip_the_guard(server):
 		with pytest.raises(BotUnavailableError, match="ReadTimeout"):
 			await api.send_message(user_id=1, text="x")
 	assert len(server.calls) == 5 and api.guard.trips == 0  # every call was really tried
+
+
+async def test_flood_control_pauses_the_other_calls_too(server, sleeps):
+	server.on("POST", "/answers", {"code": "too.many"}, status=429, headers={"Retry-After": "9"})
+	server.on("POST", "/answers", {"success": True})
+	server.on("GET", "/chats/5", {"chat_id": 5, "type": "chat", "status": "active"})
+	api = server.api()
+	await api.answer_callback("cb", notification="ok")
+	assert sleeps == [9.0]
+	await api.get_chat(5)  # another call, right after: waits out the rest of the pause
+	assert len(sleeps) == 2 and 8 < sleeps[1] <= 9

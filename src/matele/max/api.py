@@ -10,6 +10,8 @@ returns the models from matele.max.models. Behaviour shared by all calls:
   • TLS trusts the Russian Trusted Root CA (bundled), which MAX's API is
 	signed with, on top of certifi's public roots, for this client only;
   • 429 and 502/503/504 are retried (honouring Retry-After), then raised;
+	while MAX asks to wait after a 429, every other call of this client
+	waits too;
   • errors raise matele.BotApiError (BotForbiddenError when the person
 	blocked the bot or never opened the dialog); a 200 answer with
 	`"success": false` raises too;
@@ -23,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import ssl
+import time
 from collections.abc import Iterable, Sequence
 from importlib import resources
 from pathlib import Path
@@ -108,6 +111,7 @@ class MaxApi:
 		self._headers = {"Authorization": token}
 		self.guard = guard or ConnectionGuard(MAX)
 		self.max_download = max_download
+		self._flood_until = 0.0  # monotonic time flood control ends
 
 	async def close(self) -> None:
 		if self._own_http:
@@ -135,6 +139,10 @@ class MaxApi:
 		"""One API call; returns the decoded JSON. Use it for endpoints this
 		client doesn't cover yet. `probe` bypasses (and resets) the guard."""
 		query = {k: (str(v).lower() if isinstance(v, bool) else v) for k, v in (params or {}).items() if v is not None}
+		if not probe:
+			wait = self._flood_until - time.monotonic()
+			if wait > 0:  # another call was told to slow down: don't add to the flood
+				await _sleep(wait)
 		for attempt in range(len(RETRY_DELAYS) + 1):
 			if not probe:
 				self.guard.check()
@@ -152,6 +160,9 @@ class MaxApi:
 					self.guard.failed()
 				raise BotUnavailableError(0, "network", f"{type(exc).__name__}: {exc}", platform=MAX) from None
 			self.guard.ok()
+			if resp.status_code == 429:
+				pause = _retry_after(resp) or RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
+				self._flood_until = max(self._flood_until, time.monotonic() + pause)
 			if resp.status_code in RETRY_STATUSES and attempt < len(RETRY_DELAYS):
 				delay = _retry_after(resp) or RETRY_DELAYS[attempt]
 				logger.info("MAX answered %s on %s %s, retrying in %ss", resp.status_code, method, path, delay)

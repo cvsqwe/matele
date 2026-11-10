@@ -14,7 +14,8 @@ on one messenger never waits for or fails because of another.
 
   • Each messenger gets at most `rate` messages per second (25 by default,
 	under the ~30/s both MAX and Telegram allow a bot).
-  • Flood control (429) and gateway errors are retried by the API clients.
+  • Flood control (429) and gateway errors are retried by the API clients;
+	while a messenger asks to slow down, all sends to it pause.
   • When a messenger has just become unreachable, a send waits for it a
 	little and retries; if it stays down, sends fail at once instead of
 	holding up a broadcast.
@@ -91,6 +92,8 @@ class Delivery:
 
 @dataclass
 class BroadcastReport:
+	# One per person and messenger. Without the sent messages (`message` is
+	# None), so a report on a million people stays small.
 	deliveries: list[Delivery] = field(default_factory=list)
 	people: int = 0
 	reached: int = 0  # people who got the message on at least one messenger
@@ -191,6 +194,8 @@ class Hub:
 		async def worker() -> None:
 			for accounts in queue:  # workers share one iterator: each person once
 				deliveries = await self.send(accounts, text, keyboard)
+				for delivery in deliveries:
+					delivery.message = None  # the report keeps the outcome only
 				report.deliveries.extend(deliveries)
 				report.people += 1
 				report.reached += any(d.ok for d in deliveries)

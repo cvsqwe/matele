@@ -11,7 +11,9 @@ and lists are sent as JSON), the `result` field is returned as plain JSON.
 Files go as InputFile and switch the request to multipart.
 
 Shared behaviour (same as MaxApi):
-  • 429 is retried after `retry_after`, 502/503/504 with backoff;
+  • 429 is retried after `retry_after`, 502/503/504 with backoff; while
+	Telegram asks to wait, every other call of this client waits too
+	(more requests during flood control only make it last longer);
   • errors raise matele.BotApiError (BotForbiddenError for 403);
   • a ConnectionGuard makes calls fail fast for a while after a network
 	failure; getUpdates and getMe bypass it;
@@ -24,6 +26,7 @@ import asyncio
 import json
 import logging
 import mimetypes
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any
@@ -130,6 +133,7 @@ class TelegramApi:
 		self._http = http or httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0), proxy=proxy)
 		self.guard = guard or ConnectionGuard(TELEGRAM)
 		self.max_download = max_download
+		self._flood_until = 0.0  # monotonic time flood control ends
 
 	async def close(self) -> None:
 		if self._own_http:
@@ -149,6 +153,10 @@ class TelegramApi:
 		flood_left, retry = FLOOD_RETRIES, 0
 		# A stream that can't be rewound can't be sent twice: no retries then.
 		repeatable = all(_rewindable(f.source) for f in files.values())
+		if not probe:
+			wait = self._flood_until - time.monotonic()
+			if wait > 0:  # another call was told to slow down: don't add to the flood
+				await _sleep(wait)
 		while True:
 			resp = await self._post(method, params, files, request_timeout, probe)
 			try:
@@ -162,11 +170,13 @@ class TelegramApi:
 			status = int(payload.get("error_code") or resp.status_code)
 			description = str(payload.get("description") or "unknown error")
 			retry_after = (payload.get("parameters") or {}).get("retry_after")
+			delay = min(float(retry_after), RETRY_AFTER_CAP) if status == 429 and retry_after else 0.0
+			if delay:
+				self._flood_until = max(self._flood_until, time.monotonic() + delay)
 			if not repeatable:
 				raise api_error(status, method, description)
-			if status == 429 and retry_after and flood_left > 0:
+			if delay and flood_left > 0:
 				flood_left -= 1
-				delay = min(float(retry_after), RETRY_AFTER_CAP)
 				logger.info("Telegram flood control on %s, waiting %ss", method, delay)
 				await _sleep(delay)
 				continue
