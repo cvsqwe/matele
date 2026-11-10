@@ -13,17 +13,17 @@ mkdir my-bot
 cd my-bot
 python -m venv .venv
 source .venv/bin/activate      # в Windows: .venv\Scripts\activate
-pip install git+https://github.com/cvsqwe/matele
+pip install matele
 ```
 
-matele пока не опубликован на PyPI, поэтому ставится прямо из репозитория. Вместе с ним установятся две зависимости: `httpx` для запросов к мессенджерам и `certifi` с корневыми сертификатами.
+Вместе с matele установятся две зависимости: `httpx` для запросов к мессенджерам и `certifi` с корневыми сертификатами.
 
 Часть возможностей требует дополнительных пакетов. Ставьте их, только когда они понадобятся:
 
 | Что нужно | Как поставить |
 |---|---|
-| вебхуки | `pip install "matele[webhook] @ git+https://github.com/cvsqwe/matele"` |
-| хранение состояний в Redis | `pip install "matele[redis] @ git+https://github.com/cvsqwe/matele"` |
+| вебхуки | `pip install "matele[webhook]"` |
+| хранение состояний в Redis | `pip install "matele[redis]"` |
 
 Хранение состояний в SQLite и всё остальное работает без дополнительных пакетов.
 

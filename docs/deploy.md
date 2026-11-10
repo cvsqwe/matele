@@ -97,14 +97,13 @@ sudo journalctl -u my-bot -f      # смотреть лог
 ```dockerfile
 FROM python:3.12-slim
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 CMD ["python", "bot.py"]
 ```
 
-В `requirements.txt` одна строка: `matele @ git+https://github.com/cvsqwe/matele`. Пакет `git` в образе нужен, пока matele ставится из репозитория.
+В `requirements.txt` перечислены зависимости бота, например `matele==0.1.0`. Точная версия защищает от того, что новая версия matele с ломающими изменениями приедет при очередной сборке образа.
 
 ```bash
 docker run -d --name my-bot --restart unless-stopped --stop-timeout 20 \

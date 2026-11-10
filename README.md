@@ -2,20 +2,20 @@
 
 Фреймворк на Python для ботов, которые работают сразу в MAX и Telegram. Хендлеры пишутся один раз, а разницу между мессенджерами matele берёт на себя.
 
-Проект на ранней стадии: API ещё может меняться, на PyPI пока не опубликован.
+Проект на ранней стадии: до версии 1.0 API ещё может меняться. Все изменения записываются в [CHANGELOG.md](https://github.com/cvsqwe/matele/blob/main/CHANGELOG.md).
 
 Документация с руководством: https://cvsqwe.github.io/matele/
 
 ## Установка
 
 ```bash
-pip install git+https://github.com/cvsqwe/matele
+pip install matele
 ```
 
 Нужен Python 3.11 или новее. Для вебхуков добавьте `[webhook]`, для хранения состояния в Redis `[redis]`:
 
 ```bash
-pip install "matele[webhook,redis] @ git+https://github.com/cvsqwe/matele"
+pip install "matele[webhook,redis]"
 ```
 
 ## Пример
@@ -241,7 +241,7 @@ assert bot.sent[-1].text == "Привет! На каком языке говор
 
 ## Что дальше
 
-Ближайшее: проверка на живых ботах и релиз на PyPI. Подробнее в [ROADMAP.md](https://github.com/cvsqwe/matele/blob/main/ROADMAP.md).
+Ближайшее: проверка на живых ботах в обоих мессенджерах. Подробнее в [ROADMAP.md](https://github.com/cvsqwe/matele/blob/main/ROADMAP.md).
 
 ## Разработка
 
