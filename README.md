@@ -1,5 +1,7 @@
 # matele
 
+[![PyPI](https://img.shields.io/pypi/v/matele)](https://pypi.org/project/matele/) [![Python](https://img.shields.io/pypi/pyversions/matele)](https://pypi.org/project/matele/) [![CI](https://github.com/cvsqwe/matele/actions/workflows/ci.yml/badge.svg)](https://github.com/cvsqwe/matele/actions/workflows/ci.yml) [![License](https://img.shields.io/pypi/l/matele)](https://github.com/cvsqwe/matele/blob/main/LICENSE)
+
 Фреймворк на Python для ботов, которые работают сразу в MAX и Telegram. Хендлеры пишутся один раз, а разницу между мессенджерами matele берёт на себя.
 
 Проект на ранней стадии: до версии 1.0 API ещё может меняться. Все изменения записываются в [CHANGELOG.md](https://github.com/cvsqwe/matele/blob/main/CHANGELOG.md).
