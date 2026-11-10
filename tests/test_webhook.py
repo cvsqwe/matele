@@ -240,3 +240,29 @@ async def test_an_overloaded_webhook_answers_503_until_there_is_room():
 	assert await webhook.handle("/tg", headers, body(3)) == 200  # the retry is not taken for a repeat
 	await asyncio.gather(*webhook._running)
 	assert sorted(handled) == ["m1", "m2", "m3"]
+
+
+async def test_at_least_once_answers_only_when_the_event_is_handled():
+	dp = Dispatcher(registry=CallbackRegistry())
+	release = asyncio.Event()
+	handled = []
+
+	@dp.message()
+	async def slow(ctx: Context):
+		await release.wait()
+		handled.append(ctx.text)
+
+	webhook = Webhook(dp, secret=SECRET, at_least_once=True)
+	webhook.add(TelegramBot(TOKEN, api=FakeTelegram().api()), "/tg")
+	headers = {"X-Telegram-Bot-Api-Secret-Token": SECRET}
+	body = json.dumps({"update_id": 5, "message": tg_message("pay")}).encode()
+
+	first = asyncio.create_task(webhook.handle("/tg", headers, body))
+	retry = asyncio.create_task(webhook.handle("/tg", headers, body))  # the messenger got tired of waiting
+	for _ in range(20):
+		await asyncio.sleep(0)
+	assert not first.done() and not retry.done()  # no 200 while the handler runs
+	release.set()
+	assert await first == 200 and await retry == 200
+	assert handled == ["pay"]  # once
+	assert not webhook._in_flight

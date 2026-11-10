@@ -22,6 +22,14 @@ background (messengers retry slow webhooks), in order per person. When
 get 503 until there is room: the messenger sends them again later,
 instead of the process piling up tasks until it runs out of memory.
 
+With `at_least_once=True` a request is answered only after its events
+are handled. If the process dies in the middle, the messenger never got
+its 200 and sends the update again after the restart, so the event is
+not lost; handlers must cope with a repeat. A messenger that gives up
+waiting on a slow handler and repeats the request while it still runs
+gets its answer when that same handling finishes: the event is not
+handled twice.
+
 Requirements from the messengers: a public https URL with a valid
 certificate; MAX accepts only port 443, Telegram 443, 80, 88 or 8443.
 Put a reverse proxy (nginx, Caddy) in front if the app listens elsewhere.
@@ -30,6 +38,7 @@ Put a reverse proxy (nginx, Caddy) in front if the app listens elsewhere.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
@@ -86,12 +95,15 @@ class Webhook:
 		delete_on_shutdown: bool = False,
 		close_bots: bool = True,
 		max_pending: int = MAX_PENDING,
+		at_least_once: bool = False,
 	):
 		"""`base_url`: the public https address the routes are under; without
 		it the webhooks are not registered on startup (do it yourself).
 		`secret`: checked on every request; random by default.
 		`max_pending`: how many accepted events may wait to be handled
-		before new requests are answered 503 (and sent again later)."""
+		before new requests are answered 503 (and sent again later).
+		`at_least_once`: answer a request only when its events are handled,
+		so the messenger repeats an update the process died on."""
 		if secret is not None and not _SECRET_RE.match(secret):
 			raise ValueError("secret must be 5-256 characters: A-Z, a-z, 0-9, _ and -")
 		self.dp = dp
@@ -100,6 +112,9 @@ class Webhook:
 		self.delete_on_shutdown = delete_on_shutdown
 		self.close_bots = close_bots
 		self.max_pending = max(max_pending, 1)
+		self.at_least_once = at_least_once
+		# at_least_once: request (path + body) -> its handling, while it runs
+		self._in_flight: dict[bytes, asyncio.Future[None]] = {}
 		self._overloaded = False
 		self.routes: dict[str, WebhookTransport] = {}
 		self._locks = KeyedLocks()
@@ -148,6 +163,11 @@ class Webhook:
 		if not hmac.compare_digest(given.encode(), self.secret.encode()):
 			logger.warning("%s: webhook request with a wrong secret", bot.title)
 			return 403
+		request_key = hashlib.sha256(path.encode() + b"\0" + body).digest() if self.at_least_once else b""
+		repeated = self._in_flight.get(request_key)
+		if repeated is not None:  # the messenger's retry of a request still being handled
+			await asyncio.shield(repeated)
+			return 200
 		if len(self._running) >= self.max_pending:
 			if not self._overloaded:  # once per overload, not per request
 				self._overloaded = True
@@ -167,10 +187,18 @@ class Webhook:
 		except Exception:  # a broken update must not make the messenger retry it forever
 			logger.exception("%s: could not parse a webhook %s", bot.title, describe_update(data))
 			return 200
+		tasks: list[asyncio.Task[None]] = []
 		for event in events:
 			task = asyncio.create_task(self._feed(event))
 			self._running.add(task)
 			task.add_done_callback(self._running.discard)
+			tasks.append(task)
+		if self.at_least_once and tasks:
+			handled = asyncio.ensure_future(_all_done(tasks))
+			self._in_flight[request_key] = handled
+			handled.add_done_callback(lambda _: self._in_flight.pop(request_key, None))
+			# Shielded: the handling goes on even if this request is dropped.
+			await asyncio.shield(handled)
 		return 200
 
 	async def _feed(self, event: IncomingEvent) -> None:
@@ -228,6 +256,10 @@ class Webhook:
 		except ImportError:
 			raise RuntimeError("Webhook.run() needs uvicorn: pip install matele[webhook]") from None
 		uvicorn.run(self, host=host, port=port, **uvicorn_options)
+
+
+async def _all_done(tasks: list[asyncio.Task[None]]) -> None:
+	await asyncio.wait(tasks)
 
 
 async def _respond(send: Send, status: int) -> None:
