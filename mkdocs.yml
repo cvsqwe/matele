@@ -55,8 +55,12 @@ markdown_extensions:
 nav:
   - Главная: index.md
   - Первый бот: first-bot.md
+  - Как устроен matele: concepts.md
   - Руководство:
       - Хендлеры и контекст: handlers.md
+      - Фильтры: filters.md
+      - Роутеры и middleware: routers.md
+      - Ошибки: errors.md
       - Кнопки: buttons.md
       - Меню в одном сообщении: menus.md
       - Состояния: states.md
@@ -64,8 +68,10 @@ nav:
       - Файлы и форматирование: files.md
       - Тестирование: testing.md
   - Запуск и интеграции:
+      - Запуск на сервере: deploy.md
       - Вебхуки: webhooks.md
       - Мини-приложения: mini-apps.md
       - Рассылки: broadcasts.md
       - API мессенджеров: platform-api.md
+  - Справочник: reference.md
   - Изменения: changelog.md
