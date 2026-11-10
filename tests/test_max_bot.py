@@ -244,3 +244,28 @@ async def test_polling_a_real_max_transport(server, bot):
 		await task
 	assert [c for c in server.calls if c.method == "POST"][0].json["text"] == "PING"
 	assert bot.me is not None and bot.me.username == "my_bot"
+
+
+async def test_with_a_secret_only_buttons_the_bot_made_are_accepted(server):
+	from matele.max import models as m
+
+	bot = MaxBot("secret-token", api=server.api(), callback_secret="s3cret")
+	server.on("POST", "/messages", {"message": message()})
+	await bot.send_message("menu", user_id=7, keyboard=Keyboard([[Button("Order", "order:view:42")]]))
+	sent = server.calls[-1].json["attachments"][0]["payload"]["buttons"][0][0]["payload"]
+	assert sent.startswith("order:view:42#")
+
+	def press(data: str) -> m.Update:
+		return m.Update.from_dict(
+			{
+				"update_type": "message_callback",
+				"timestamp": 1,
+				"callback": {"timestamp": 1, "callback_id": "cb", "payload": data, "user": user()},
+				"message": message(),
+			}
+		)
+
+	(real,) = bot.parse_update(press(sent))
+	assert isinstance(real, CallbackQuery) and real.data == "order:view:42"
+	(forged,) = bot.parse_update(press("order:view:43"))
+	assert isinstance(forged, CallbackQuery) and forged.data == ""

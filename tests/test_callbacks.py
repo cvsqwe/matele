@@ -124,3 +124,15 @@ def test_unsupported_field_type():
 		@callback("bad", registry=CallbackRegistry())
 		class Bad:
 			value: float
+
+
+def test_signed_data_round_trips_and_forgeries_are_refused():
+	from matele.callbacks import sign, unsign
+
+	signed = sign("order:view:42", "s3cret")
+	assert signed != "order:view:42" and unsign(signed, "s3cret") == "order:view:42"
+	assert unsign("order:view:43" + signed[len("order:view:42") :], "s3cret") is None  # another order, same signature
+	assert unsign("order:view:42", "s3cret") is None  # no signature at all
+	assert unsign(signed, "other") is None
+	assert unsign(sign("note:a#b", "s3cret"), "s3cret") == "note:a#b"  # data may contain the separator
+	assert unsign("order:view:42#ы", "s3cret") is None

@@ -26,6 +26,7 @@ import logging
 from typing import Any
 from urllib.parse import urlsplit
 
+from matele.callbacks import sign, unsign
 from matele.errors import BotForbiddenError, ConnectionGuard
 from matele.max import models as m
 from matele.max.api import DEFAULT_BASE_URL, MaxApi
@@ -60,9 +61,21 @@ _DEFAULT_FILENAMES = {"image": "image.jpg", "video": "video.mp4", "audio": "audi
 class MaxBot:
 	title = "MAX"
 
-	def __init__(self, token: str, *, api: MaxApi | None = None, base_url: str = DEFAULT_BASE_URL, platform: str = MAX):
+	def __init__(
+		self,
+		token: str,
+		*,
+		api: MaxApi | None = None,
+		base_url: str = DEFAULT_BASE_URL,
+		platform: str = MAX,
+		callback_secret: str | None = None,
+	):
 		"""`platform` is the name events carry (and FSM keys use); keep the
-		default unless you need it to match ids stored by older code."""
+		default unless you need it to match ids stored by older code.
+		`callback_secret`: signs button data, so only buttons this bot made
+		are accepted (see matele.callbacks). Keep it the same across
+		restarts: buttons signed with another secret stop working."""
+		self._callback_secret = callback_secret
 		self.api = api or MaxApi(token, base_url=base_url)
 		self._token = token
 		self.platform = platform
@@ -153,7 +166,7 @@ class MaxBot:
 			self._remember_callback(cb.callback_id, cb.user.user_id)
 			return CallbackQuery(
 				id=cb.callback_id,
-				data=cb.payload or "",
+				data=self._checked(cb.payload or "", cb.user.user_id),
 				from_user=self._user(cb.user),
 				message=self._message(update.message) if update.message is not None else None,
 				bot=self,
@@ -197,6 +210,15 @@ class MaxBot:
 		logger.debug("Ignoring MAX update %s", update.update_type)
 		return None
 
+	def _checked(self, data: str, user_id: int) -> str:
+		"""Button data without its signature; "" if the signature is wrong."""
+		if not self._callback_secret or not data:
+			return data
+		checked = unsign(data, self._callback_secret)
+		if checked is None:
+			logger.debug("MAX: button data without a valid signature from user %s", user_id)
+		return checked or ""
+
 	def _user(self, user: m.User) -> User:
 		name = " ".join(p for p in (user.first_name, user.last_name) if p) or None
 		return User(id=user.user_id, platform=self.platform, name=name, username=user.username)
@@ -231,7 +253,7 @@ class MaxBot:
 	) -> Message:
 		chat_id, user_id = recipient(chat_id, user_id)
 		body, keyboard = move_unlinkable_buttons(text, keyboard)
-		attachments = [keyboard_attachment(keyboard, self.me)] if keyboard is not None else None
+		attachments = [keyboard_attachment(keyboard, self.me, self._callback_secret)] if keyboard is not None else None
 		sent = await self.api.send_message(
 			chat_id=chat_id,
 			user_id=user_id,
@@ -246,7 +268,7 @@ class MaxBot:
 		new_text, keyboard = move_unlinkable_buttons(text, keyboard)
 		# An empty list removes the old keyboard: an edit without one drops it.
 		attachments: list[m.AttachmentRequest] = (
-			[keyboard_attachment(keyboard, self.me)] if keyboard is not None else []
+			[keyboard_attachment(keyboard, self.me, self._callback_secret)] if keyboard is not None else []
 		)
 		await self.api.edit_message(message_id, text=new_text, format="html", attachments=attachments)
 
@@ -329,7 +351,7 @@ class MaxBot:
 		caption, keyboard = move_unlinkable_buttons(caption, keyboard)
 		attachments = [attachment]
 		if keyboard is not None:
-			attachments.append(keyboard_attachment(keyboard, self.me))
+			attachments.append(keyboard_attachment(keyboard, self.me, self._callback_secret))
 		sent = await self.api.send_message(
 			chat_id=chat_id,
 			user_id=user_id,
@@ -373,10 +395,12 @@ def _attachment_by_token(file_type: str, token: str) -> m.AttachmentRequest:
 	return cls(payload=m.UploadedInfo(token=token))
 
 
-def keyboard_attachment(keyboard: Keyboard, bot: User | None = None) -> m.InlineKeyboardAttachmentRequest:
+def keyboard_attachment(
+	keyboard: Keyboard, bot: User | None = None, secret: str | None = None
+) -> m.InlineKeyboardAttachmentRequest:
 	"""`bot`: the bot itself, needed for mini app buttons (they point at the
-	bot whose mini app to open)."""
-	rows: list[list[m.Button]] = [[_button(b, bot) for b in row] for row in keyboard.rows]
+	bot whose mini app to open). `secret`: signs the buttons' data."""
+	rows: list[list[m.Button]] = [[_button(b, bot, secret) for b in row] for row in keyboard.rows]
 	return m.InlineKeyboardAttachmentRequest(payload=m.InlineKeyboardAttachmentRequestPayload(buttons=rows))
 
 
@@ -384,7 +408,7 @@ CALLBACK_PAYLOAD_LIMIT = 1024  # MAX's limit on a button's payload
 MENU_LIMIT = 32  # commands MAX shows in the menu
 
 
-def _button(button: Button, bot: User | None = None) -> m.Button:
+def _button(button: Button, bot: User | None = None, secret: str | None = None) -> m.Button:
 	if button.app is not None:
 		if bot is None or not bot.username:
 			raise ValueError("mini app buttons need the bot's own name: call get_me() first (polling and webhooks do)")
@@ -393,6 +417,8 @@ def _button(button: Button, bot: User | None = None) -> m.Button:
 	if button.url is not None:
 		return m.LinkButton(text=button.text, url=button.url)
 	payload = button.data or "noop"
+	if secret:
+		payload = sign(payload, secret)
 	if len(payload) > CALLBACK_PAYLOAD_LIMIT:
 		raise ValueError(
 			f"button {button.text!r}: MAX allows {CALLBACK_PAYLOAD_LIMIT} characters of data, got {len(payload)}"

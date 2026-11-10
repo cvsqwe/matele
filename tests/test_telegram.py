@@ -361,3 +361,19 @@ async def test_flood_control_pauses_the_other_calls_too(tg, sleeps):
 	assert len(sleeps) == 3 and 6 < sleeps[2] <= 7
 	await api.call("getUpdates")  # long polling doesn't wait
 	assert len(sleeps) == 3
+
+
+async def test_with_a_secret_only_buttons_the_bot_made_are_accepted(tg):
+	bot = TelegramBot(TOKEN, api=tg.api(), callback_secret="s3cret")
+	tg.ok("sendMessage", tg_message("menu"))
+	await bot.send_message("menu", user_id=7, keyboard=Keyboard([[Button("Order", "order:view:42")]]))
+	sent = tg.calls[-1][1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+	assert sent.startswith("order:view:42#")
+
+	def press(data: str) -> dict[str, Any]:
+		return {"callback_query": {"id": "1", "data": data, "from": {"id": 7}, "message": tg_message("menu")}}
+
+	(real,) = await bot.parse_update(press(sent))
+	assert isinstance(real, CallbackQuery) and real.data == "order:view:42"
+	(forged,) = await bot.parse_update(press("order:view:43"))
+	assert isinstance(forged, CallbackQuery) and forged.data == ""  # like an outdated button

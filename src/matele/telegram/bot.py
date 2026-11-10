@@ -35,6 +35,7 @@ from collections import OrderedDict
 from typing import Any, Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from matele.callbacks import sign, unsign
 from matele.errors import BotApiError, ConnectionGuard
 from matele.telegram.api import DEFAULT_API_URL, InputFile, TelegramApi, api_error
 from matele.types import (
@@ -214,11 +215,15 @@ class TelegramBot:
 		platform: str = TELEGRAM,
 		app_url: str | None = None,
 		replace_webhook: bool = False,
+		callback_secret: str | None = None,
 	):
 		"""`app_url`: the https address of the bot's mini app, for
 		Button(app=...); the button's value is added as ?startapp=...
 		`replace_webhook`: let polling remove a webhook set for this token.
-		Off by default: the webhook may belong to a running deployment."""
+		Off by default: the webhook may belong to a running deployment.
+		`callback_secret`: signs button data, so only buttons this bot made
+		are accepted (see matele.callbacks). Keep it the same across
+		restarts: buttons signed with another secret stop working."""
 		self.api = api or TelegramApi(token, api_url=api_url, proxy=proxy)
 		self._token = token
 		self.app_url = app_url
@@ -226,6 +231,7 @@ class TelegramBot:
 		self.platform = platform
 		self.me: User | None = None
 		self.replace_webhook = replace_webhook
+		self._callback_secret = callback_secret
 		self._offset: int | None = None
 		self._webhook_cleared = False
 		self._seen_updates: OrderedDict[int, None] = OrderedDict()
@@ -329,6 +335,11 @@ class TelegramBot:
 		if "callback_query" in update:
 			raw = update["callback_query"]
 			data = await self.aliases.decode(raw.get("data")) or ""
+			if self._callback_secret and data:
+				checked = unsign(data, self._callback_secret)
+				if checked is None:
+					logger.debug("Telegram: button data without a valid signature from user %s", raw["from"]["id"])
+				data = checked or ""
 			raw_message = raw.get("message")
 			message = self._message(raw_message) if raw_message and raw_message.get("chat") else None
 			return [
@@ -445,7 +456,10 @@ class TelegramBot:
 			if button.url.startswith(("http://", "https://", "tg://")):
 				return {"text": button.text, "url": button.url}
 			return {"text": button.text, "callback_data": "noop"}
-		return {"text": button.text, "callback_data": self.aliases.encode(button.data or "noop")}
+		data = button.data or "noop"
+		if self._callback_secret:
+			data = sign(data, self._callback_secret)
+		return {"text": button.text, "callback_data": self.aliases.encode(data)}
 
 	def markup(self, keyboard: Keyboard | None) -> dict[str, Any] | None:
 		if keyboard is None:

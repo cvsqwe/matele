@@ -24,12 +24,24 @@ Prefixes are unique within a registry: declaring the same one twice is an
 error at import time, so two features can never fight over a button.
 `callback()` and `parse()` use the default registry unless given another
 (tests and plugins may want their own).
+
+Button data comes back from the person's client, and a modified client
+can send any string: `order:view:43` for an order that was never shown
+to them. Give the bots a `callback_secret` and every payload is sent
+with a signature (`sign()`); data that doesn't carry a valid one reaches
+the handlers as an outdated button, not as a payload. A person can then
+only press buttons the bot really made, though still any of them they
+have seen (in a group, other people's too): who may do what is for the
+handler to check.
 """
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import datetime as dt
+import hashlib
+import hmac
 import typing
 from collections.abc import Callable
 from typing import Any, ClassVar, Literal, Self, TypeVar, cast, dataclass_transform
@@ -37,6 +49,28 @@ from typing import Any, ClassVar, Literal, Self, TypeVar, cast, dataclass_transf
 SEP = ":"
 
 T = TypeVar("T")
+
+
+SIGN_SEP = "#"
+SIGNATURE_LENGTH = 10  # base64 characters: 60 bits of an HMAC-SHA256
+
+
+def _signature(data: str, secret: str) -> str:
+	digest = hmac.new(secret.encode(), data.encode(), hashlib.sha256).digest()
+	return base64.urlsafe_b64encode(digest).decode()[:SIGNATURE_LENGTH]
+
+
+def sign(data: str, secret: str) -> str:
+	"""`data` with a signature only the holder of `secret` can make."""
+	return f"{data}{SIGN_SEP}{_signature(data, secret)}"
+
+
+def unsign(signed: str, secret: str) -> str | None:
+	"""The data `sign()` was given; None if the signature is missing or wrong."""
+	data, sep, given = signed.rpartition(SIGN_SEP)
+	if not sep or not hmac.compare_digest(given.encode(), _signature(data, secret).encode()):
+		return None
+	return data
 
 
 class CallbackError(ValueError):
