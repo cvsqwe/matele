@@ -84,7 +84,9 @@ def verify_init_data(
 	variants = [fields]
 	if "signature" in fields:
 		variants.append({k: v for k, v in fields.items() if k != "signature"})
-	if not any(hmac.compare_digest(_hash(secret, variant), given.lower()) for variant in variants):
+	# Compared as bytes: compare_digest refuses non-ASCII strings with a TypeError.
+	claimed = given.lower().encode()
+	if not any(hmac.compare_digest(_hash(secret, variant).encode(), claimed) for variant in variants):
 		raise InitDataError("wrong signature")
 
 	try:

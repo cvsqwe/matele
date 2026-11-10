@@ -128,3 +128,8 @@ async def test_max_app_button():
 	await bot.send_message("menu", user_id=7, keyboard=keyboard)
 	button = server.calls[0].json["attachments"][0]["payload"]["buttons"][0][0]
 	assert button == {"type": "open_app", "text": "Заказы", "web_app": "shop_bot", "contact_id": 5, "payload": "orders"}
+
+
+def test_a_non_ascii_hash_is_a_wrong_signature_not_a_crash():
+	with pytest.raises(InitDataError, match="wrong signature"):
+		verify_init_data("auth_date=1&hash=%D1%8B", "token", platform="max")
