@@ -83,7 +83,17 @@ class _RedactTokens(logging.Filter):
 
 
 _redact = _RedactTokens()
-for _name in ("httpx", "httpcore"):
+# A logger's filters don't see records of its child loggers, and httpcore
+# logs through children only: each one is named here.
+for _name in (
+	"httpx",
+	"httpcore",
+	"httpcore.connection",
+	"httpcore.http11",
+	"httpcore.http2",
+	"httpcore.proxy",
+	"httpcore.socks",
+):
 	logging.getLogger(_name).addFilter(_redact)
 
 

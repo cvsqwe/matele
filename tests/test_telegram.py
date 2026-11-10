@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 from typing import Any
 
 import httpx
@@ -306,3 +307,11 @@ async def test_download_refuses_a_file_over_the_limit(tg):
 		await api.download("docs/report.pdf")  # the fake serves b"FILE:report.pdf"
 	assert caught.value.status_code == 413
 	assert await api.download("docs/report.pdf", max_size=100) == b"FILE:report.pdf"
+
+
+@pytest.mark.parametrize("name", ["httpx", "httpcore.http11", "httpcore.connection", "httpcore.proxy"])
+def test_the_token_is_hidden_in_http_client_logs(tg, caplog, name):
+	tg.api()  # creating a client registers its token for redaction
+	with caplog.at_level(logging.DEBUG, logger=name):
+		logging.getLogger(name).debug("POST https://tg.test/bot%s/getMe", TOKEN)
+	assert TOKEN not in caplog.text and "bot***/getMe" in caplog.text
