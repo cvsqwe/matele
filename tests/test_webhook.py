@@ -203,3 +203,11 @@ async def test_asgi_lifespan_reports_startup_failure(setup, server):
 
 	await webhook({"type": "lifespan"}, receive, send)
 	assert sent[0]["type"] == "lifespan.startup.failed" and "Invalid access_token" in sent[0]["message"]
+
+
+async def test_a_repeated_telegram_update_is_handled_once():
+	bot = TelegramBot(TOKEN, api=FakeTelegram().api())
+	update = {"update_id": 77, "message": tg_message("pay 100")}
+	assert len(await bot.parse_webhook(update)) == 1
+	assert await bot.parse_webhook(update) == []  # Telegram's retry of the same update
+	assert len(await bot.parse_webhook({"update_id": 78, "message": tg_message("next")})) == 1

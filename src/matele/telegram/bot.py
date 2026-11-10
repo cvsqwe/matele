@@ -67,6 +67,7 @@ ALIAS_RESAVE_AFTER = 24 * 3600  # refresh a stored alias's timestamp at most dai
 ALIAS_TTL_DAYS = 60
 ALIAS_PURGE_EVERY = 24 * 3600
 ALIAS_CACHE_SIZE = 10_000  # aliases kept in memory
+SEEN_UPDATES = 2000  # webhook update ids remembered to drop repeats
 ALLOWED_UPDATES = ["message", "callback_query", "my_chat_member"]
 
 # attachment type -> (send method, file field, accepts a caption)
@@ -227,6 +228,7 @@ class TelegramBot:
 		self.replace_webhook = replace_webhook
 		self._offset: int | None = None
 		self._webhook_cleared = False
+		self._seen_updates: OrderedDict[int, None] = OrderedDict()
 
 	@property
 	def guard(self) -> ConnectionGuard:
@@ -254,7 +256,17 @@ class TelegramBot:
 		await self.api.call("deleteWebhook")
 
 	async def parse_webhook(self, data: dict[str, Any]) -> list[IncomingEvent]:
-		"""A webhook request body (one Telegram update) -> matele events."""
+		"""A webhook request body (one Telegram update) -> matele events.
+		Telegram sends an update again when an answer to it got lost on the
+		way; a repeat gives no events, so it isn't handled twice."""
+		update_id = data.get("update_id")
+		if isinstance(update_id, int):
+			if update_id in self._seen_updates:
+				logger.debug("Telegram sent update %s again: skipped", update_id)
+				return []
+			self._seen_updates[update_id] = None
+			if len(self._seen_updates) > SEEN_UPDATES:
+				self._seen_updates.popitem(last=False)
 		return await self.parse_update(data)
 
 	# ------------------------------------------------------------ incoming
