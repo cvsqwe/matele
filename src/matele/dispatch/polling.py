@@ -4,6 +4,11 @@ backoff while the other carries on.
 
 Events run as tasks, so one slow handler doesn't stall polling, while a
 per-person lock keeps each person's own events in order.
+
+Delivery is at most once: a batch of events counts as received when the
+next one is asked for, not when its handlers finish. So on a stop the
+handlers already running are given time to finish; an event is lost only
+if the process is killed in the middle of handling it.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MAX_BACKOFF = 60.0
+SHUTDOWN_TIMEOUT = 10.0  # the Dispatcher has the same default
 _sleep = asyncio.sleep  # patched in tests
 
 
@@ -52,9 +58,18 @@ class KeyedLocks:
 				self._locks[key] = (lock, users - 1)
 
 
-async def poll(dp: Dispatcher, client: BotClient, *, timeout: int = 30, max_backoff: float = MAX_BACKOFF) -> None:
+async def poll(
+	dp: Dispatcher,
+	client: BotClient,
+	*,
+	timeout: int = 30,
+	max_backoff: float = MAX_BACKOFF,
+	shutdown_timeout: float = SHUTDOWN_TIMEOUT,
+) -> None:
 	"""Long-polls one messenger until cancelled; never raises otherwise.
-	On cancel, events still being handled are cancelled too."""
+	On cancel, events still being handled get `shutdown_timeout` seconds
+	to finish; the rest are cancelled (and so is everything on a second
+	cancel)."""
 	log = logging.getLogger(f"matele.polling.{client.platform}")
 	locks = KeyedLocks()
 	running: set[asyncio.Task[None]] = set()
@@ -89,7 +104,19 @@ async def poll(dp: Dispatcher, client: BotClient, *, timeout: int = 30, max_back
 			# really waiting (a proxy that ignores long polling, a test fake).
 			await asyncio.sleep(0)
 	finally:
-		for task in running:
+		await drain(running, shutdown_timeout)
+
+
+async def drain(running: set[asyncio.Task[None]], timeout: float) -> None:
+	"""Waits up to `timeout` seconds for the tasks, then cancels the rest."""
+	if not running:
+		return
+	pending = set(running)
+	try:
+		if timeout > 0:
+			_, pending = await asyncio.wait(pending, timeout=timeout)
+	finally:  # also when cancelled again while waiting
+		for task in pending:
 			task.cancel()
-		if running:
-			await asyncio.gather(*running, return_exceptions=True)
+		if pending:
+			await asyncio.gather(*pending, return_exceptions=True)

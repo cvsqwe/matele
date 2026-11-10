@@ -35,7 +35,7 @@ import secrets
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any, Protocol
 
-from matele.dispatch.polling import KeyedLocks
+from matele.dispatch.polling import KeyedLocks, drain
 from matele.types import IncomingEvent, User, describe_update
 
 if TYPE_CHECKING:
@@ -116,12 +116,7 @@ class Webhook:
 
 	async def shutdown(self, timeout: float = 10.0) -> None:
 		"""Waits (up to `timeout` s) for events being handled, then cancels the rest."""
-		if self._running:
-			_, pending = await asyncio.wait(set(self._running), timeout=timeout)
-			for task in pending:
-				task.cancel()
-			if pending:
-				await asyncio.gather(*pending, return_exceptions=True)
+		await drain(self._running, timeout)
 		for path, bot in self.routes.items():
 			if self.delete_on_shutdown and self.base_url:
 				try:

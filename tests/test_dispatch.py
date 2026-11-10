@@ -504,3 +504,42 @@ async def test_polling_retries_after_failures(dp, monkeypatch):
 	with pytest.raises(asyncio.CancelledError):
 		await task
 	assert sleeps == [1.0, 2.0] and bot.texts == ["ok"]
+
+
+async def test_polling_lets_running_handlers_finish_on_stop(dp):
+	bot = FakeBot()
+	started, finished = asyncio.Event(), []
+
+	@dp.message()
+	async def slow(ctx):
+		started.set()
+		await asyncio.sleep(0.05)
+		finished.append(ctx.text)
+
+	bot.push(bot.message("order"))
+	task = asyncio.create_task(dp.start_polling(bot, timeout=1))
+	await started.wait()
+	task.cancel()
+	await asyncio.gather(task, return_exceptions=True)
+	assert finished == ["order"]
+
+
+async def test_polling_cancels_handlers_that_outlast_the_shutdown_timeout(dp):
+	bot = FakeBot()
+	started, cancelled = asyncio.Event(), []
+
+	@dp.message()
+	async def stuck(ctx):
+		started.set()
+		try:
+			await asyncio.sleep(60)
+		except asyncio.CancelledError:
+			cancelled.append(ctx.text)
+			raise
+
+	bot.push(bot.message("order"))
+	task = asyncio.create_task(dp.start_polling(bot, timeout=1, shutdown_timeout=0.01))
+	await started.wait()
+	task.cancel()
+	await asyncio.gather(task, return_exceptions=True)
+	assert cancelled == ["order"]
