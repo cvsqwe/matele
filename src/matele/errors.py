@@ -36,7 +36,16 @@ class InvalidTokenError(BotApiError):
 
 class BotUnavailableError(BotApiError):
 	"""The API can't be reached right now (network error, or the guard is
-	still cooling down after one)."""
+	still cooling down after one).
+
+	`maybe_sent`: the request may have reached the messenger before the
+	failure (a read timeout, a dropped connection), so a message may have
+	been delivered after all. Sending it again could deliver it twice.
+	False when the request surely never left (no connection, the guard)."""
+
+	def __init__(self, status_code: int, code: str, message: str, *, platform: str = "", maybe_sent: bool = False):
+		super().__init__(status_code, code, message, platform=platform)
+		self.maybe_sent = maybe_sent
 
 
 # Error texts (lowercased) that mean "this person can't get messages from

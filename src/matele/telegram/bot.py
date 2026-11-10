@@ -27,12 +27,16 @@ Private chats and groups are routed; channels are not.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
+import shutil
+import tempfile
 import time
 from collections import OrderedDict
-from typing import Any, Protocol
+from pathlib import Path
+from typing import IO, Any, Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from matele.callbacks import sign, unsign
@@ -69,6 +73,7 @@ ALIAS_TTL_DAYS = 60
 ALIAS_PURGE_EVERY = 24 * 3600
 ALIAS_CACHE_SIZE = 10_000  # aliases kept in memory
 SEEN_UPDATES = 2000  # webhook update ids remembered to drop repeats
+SPOOL_IN_MEMORY = 1024 * 1024  # a one-way stream is copied: this much in memory, the rest on disk
 ALLOWED_UPDATES = ["message", "callback_query", "my_chat_member"]
 
 # attachment type -> (send method, file field, accepts a caption)
@@ -115,6 +120,22 @@ def _with_query(url: str, **params: str) -> str:
 	parts = urlsplit(url)
 	query = parse_qsl(parts.query, keep_blank_values=True) + list(params.items())
 	return urlunsplit(parts._replace(query=urlencode(query)))
+
+
+async def _spool(source: FileSource) -> IO[bytes] | None:
+	"""A rewindable copy of a one-way stream (memory up to SPOOL_IN_MEMORY,
+	then a temporary file), which the caller closes; None for bytes, a
+	path or a stream that can be rewound as it is."""
+	if isinstance(source, bytes | Path) or source.seekable():
+		return None
+	spooled = tempfile.SpooledTemporaryFile(max_size=SPOOL_IN_MEMORY)
+	try:
+		await asyncio.to_thread(shutil.copyfileobj, source, spooled)
+		spooled.seek(0)
+	except BaseException:
+		spooled.close()
+		raise
+	return spooled
 
 
 def _is_benign(exc: BotApiError, *needles: str) -> bool:
@@ -582,14 +603,26 @@ class TelegramBot:
 		reply_to: str | None = None,
 	) -> Message:
 		method, field, supports_caption = SEND_BY_TYPE[kind]
-		params: dict[str, Any] = {
-			"chat_id": _target(chat_id, user_id),
-			field: InputFile(source, filename or default_filename(source, kind)),
-			"reply_markup": self.markup(keyboard),
-			"reply_parameters": self._reply_parameters(reply_to),
-		}
-		await self.aliases.flush()
-		return await self._send_with_caption(method, params, caption=caption, supports_caption=supports_caption)
+		name = filename or default_filename(source, kind)
+		target = _target(chat_id, user_id)
+		markup = self.markup(keyboard)
+		reply_parameters = self._reply_parameters(reply_to)
+		# A stream that can't be rewound could be sent only once, so neither a
+		# retry (429, 5xx) nor the plain-text resend of a caption that isn't
+		# valid HTML would work: copy it into a temporary file first.
+		spooled = await _spool(source)
+		try:
+			params: dict[str, Any] = {
+				"chat_id": target,
+				field: InputFile(spooled if spooled is not None else source, name),
+				"reply_markup": markup,
+				"reply_parameters": reply_parameters,
+			}
+			await self.aliases.flush()
+			return await self._send_with_caption(method, params, caption=caption, supports_caption=supports_caption)
+		finally:
+			if spooled is not None:
+				spooled.close()
 
 	def verify_init_data(self, init_data: str, *, max_age: float | None = DEFAULT_MAX_AGE) -> WebAppData:
 		"""Checks initData from this bot's mini app (see matele.webapp)."""

@@ -19,6 +19,16 @@ def is_connection_failure(exc: Exception) -> bool:
 	)
 
 
+def never_sent(exc: Exception) -> bool:
+	"""Did the request surely not reach the API (no connection could be
+	made, or none was free)? After anything else (a read timeout, a
+	connection dropped mid-way) the API may have done what was asked."""
+	return isinstance(
+		exc,
+		httpx.ConnectError | httpx.ConnectTimeout | httpx.PoolTimeout | httpx.ProxyError | httpx.UnsupportedProtocol,
+	)
+
+
 class TooLargeError(Exception):
 	"""The body is bigger than the limit."""
 

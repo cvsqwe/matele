@@ -18,7 +18,9 @@ on one messenger never waits for or fails because of another.
 	while a messenger asks to slow down, all sends to it pause.
   • When a messenger has just become unreachable, a send waits for it a
 	little and retries; if it stays down, sends fail at once instead of
-	holding up a broadcast.
+	holding up a broadcast. A send that may have reached the messenger
+	before the failure (a timeout waiting for the answer) is not retried:
+	the person could get the message twice.
   • A person who blocked the bot (or never started it) is reported in
 	`unreachable`, and `on_unreachable` is called, so you can stop writing
 	to them.
@@ -161,7 +163,9 @@ class Hub:
 			try:
 				await self._buckets[platform].acquire()
 				return await send()
-			except BotUnavailableError:
+			except BotUnavailableError as exc:
+				if exc.maybe_sent:  # it may have arrived: a second try could deliver it twice
+					raise
 				guard = getattr(bot, "guard", None)
 				if guard is None or attempt >= RETRY_ATTEMPTS or guard.trips >= OUTAGE_TRIPS:
 					raise

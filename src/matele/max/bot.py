@@ -12,7 +12,9 @@ calls, papering over what differs from other messengers:
 	is also sent as a regular message;
   • MAX rejects a whole message if a link button points somewhere it
 	doesn't consider public (localhost, a bare IP…); such buttons are
-	moved into the text instead;
+	moved into the text instead. An edit that keeps the text as it is
+	(text=None) has no text to move them into: they become inert buttons
+	there, like on Telegram, and a warning is logged;
   • text is sent as HTML.
 
 Everything MAX can do beyond that is on `bot.api` (a MaxApi).
@@ -27,7 +29,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from matele.callbacks import sign, unsign
-from matele.errors import BotForbiddenError, ConnectionGuard
+from matele.errors import BotApiError, BotForbiddenError, ConnectionGuard
 from matele.max import models as m
 from matele.max.api import DEFAULT_BASE_URL, MaxApi
 from matele.types import (
@@ -265,7 +267,10 @@ class MaxBot:
 		return self._message(sent)
 
 	async def edit_message(self, message_id: str, text: str | None, *, keyboard: Keyboard | None = None) -> None:
-		new_text, keyboard = move_unlinkable_buttons(text, keyboard)
+		if text is None:  # the text stays: links MAX won't take can't go into it
+			new_text, keyboard = None, inert_unlinkable_buttons(keyboard)
+		else:
+			new_text, keyboard = move_unlinkable_buttons(text, keyboard)
 		# An empty list removes the old keyboard: an edit without one drops it.
 		attachments: list[m.AttachmentRequest] = (
 			[keyboard_attachment(keyboard, self.me, self._callback_secret)] if keyboard is not None else []
@@ -277,7 +282,16 @@ class MaxBot:
 
 	async def answer_callback(self, callback_id: str, *, text: str | None = None, alert: bool = False) -> None:
 		user_id = self._callback_users.pop(callback_id, None)
-		await self.api.answer_callback(callback_id, notification=text or "")
+		try:
+			# Without a text nothing but the answer itself is sent: an empty
+			# notification could show an empty toast.
+			await self.api.answer_callback(callback_id, notification=text or None)
+		except BotApiError as exc:
+			if text or exc.status_code != 400:
+				raise
+			# Should MAX want a field in the answer after all, an empty
+			# notification stops the spinner just the same.
+			await self.api.answer_callback(callback_id, notification="")
 		if alert and text and user_id is not None:
 			# Privately, also when the button is in a group: an alert is
 			# meant for the person who pressed, not for the whole chat.
@@ -456,5 +470,21 @@ def move_unlinkable_buttons(text: str | None, keyboard: Keyboard | None) -> tupl
 			rows.append(kept)
 	if not moved:
 		return text, keyboard
-	lines = "".join(f"\n{html.escape(b.text)}: {html.escape(b.url or '')}" for b in moved)
-	return (text or "") + "\n" + lines, Keyboard(rows) if rows else None
+	lines = "\n".join(f"{html.escape(b.text)}: {html.escape(b.url or '')}" for b in moved)
+	return (f"{text}\n\n{lines}" if text else lines), Keyboard(rows) if rows else None
+
+
+def inert_unlinkable_buttons(keyboard: Keyboard | None) -> Keyboard | None:
+	"""Link buttons MAX would reject become buttons that do nothing."""
+	if keyboard is None:
+		return None
+	rows: list[list[Button]] = []
+	for row in keyboard.rows:
+		kept: list[Button] = []
+		for button in row:
+			if button.url is not None and not is_linkable(button.url):
+				logger.warning("MAX won't take a link button to %s: it is left without its link", button.url)
+				button = Button(button.text, data="noop")
+			kept.append(button)
+		rows.append(kept)
+	return Keyboard(rows)

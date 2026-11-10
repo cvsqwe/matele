@@ -10,6 +10,8 @@ returns the models from matele.max.models. Behaviour shared by all calls:
   • TLS trusts the Russian Trusted Root CA (bundled), which MAX's API is
 	signed with, on top of certifi's public roots, for this client only;
   • 429 and 502/503/504 are retried (honouring Retry-After), then raised;
+	sending a message is retried only on 429 and 503 (after a 502 or 504
+	it may have been sent, and a repeat would send it twice);
 	while MAX asks to wait after a 429, every other call of this client
 	waits too;
   • errors raise matele.BotApiError (BotForbiddenError when the person
@@ -34,7 +36,7 @@ from typing import IO, Any
 import certifi
 import httpx
 
-from matele._http import DEFAULT_MAX_DOWNLOAD, TooLargeError, is_connection_failure, read_limited
+from matele._http import DEFAULT_MAX_DOWNLOAD, TooLargeError, is_connection_failure, never_sent, read_limited
 from matele.errors import BotApiError, BotForbiddenError, BotUnavailableError, ConnectionGuard
 from matele.max import models as m
 from matele.types import MAX
@@ -44,6 +46,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_BASE_URL = "https://platform-api2.max.ru"
 
 RETRY_STATUSES = (429, 502, 503, 504)
+# Sending a message (or a comment) is not repeated after a 502 or 504: MAX
+# may have sent it before the gateway gave up, and a repeat would send it
+# twice. 429 and 503 mean the request was turned away.
+_SAFE_TO_REPEAT = {429, 503}
 RETRY_DELAYS = (1.0, 2.0, 4.0)
 RETRY_AFTER_CAP = 30.0
 # A freshly uploaded file needs a moment before it can be attached.
@@ -139,6 +145,7 @@ class MaxApi:
 		"""One API call; returns the decoded JSON. Use it for endpoints this
 		client doesn't cover yet. `probe` bypasses (and resets) the guard."""
 		query = {k: (str(v).lower() if isinstance(v, bool) else v) for k, v in (params or {}).items() if v is not None}
+		creates = method == "POST" and (path == "/messages" or path.endswith("/comments"))
 		if not probe:
 			wait = self._flood_until - time.monotonic()
 			if wait > 0:  # another call was told to slow down: don't add to the flood
@@ -158,12 +165,15 @@ class MaxApi:
 			except httpx.TransportError as exc:
 				if is_connection_failure(exc):
 					self.guard.failed()
-				raise BotUnavailableError(0, "network", f"{type(exc).__name__}: {exc}", platform=MAX) from None
+				raise BotUnavailableError(
+					0, "network", f"{type(exc).__name__}: {exc}", platform=MAX, maybe_sent=not never_sent(exc)
+				) from None
 			self.guard.ok()
 			if resp.status_code == 429:
 				pause = _retry_after(resp) or RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
 				self._flood_until = max(self._flood_until, time.monotonic() + pause)
-			if resp.status_code in RETRY_STATUSES and attempt < len(RETRY_DELAYS):
+			repeatable = not creates or resp.status_code in _SAFE_TO_REPEAT
+			if resp.status_code in RETRY_STATUSES and attempt < len(RETRY_DELAYS) and repeatable:
 				delay = _retry_after(resp) or RETRY_DELAYS[attempt]
 				logger.info("MAX answered %s on %s %s, retrying in %ss", resp.status_code, method, path, delay)
 				await _sleep(delay)

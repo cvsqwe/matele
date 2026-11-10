@@ -11,7 +11,9 @@ and lists are sent as JSON), the `result` field is returned as plain JSON.
 Files go as InputFile and switch the request to multipart.
 
 Shared behaviour (same as MaxApi):
-  • 429 is retried after `retry_after`, 502/503/504 with backoff; while
+  • 429 is retried after `retry_after`, 502/503/504 with backoff (only
+	503 for methods that send a message: after a 502 or 504 it may have
+	been sent, and a repeat would send it twice); while
 	Telegram asks to wait, every other call of this client waits too
 	(more requests during flood control only make it last longer);
   • errors raise matele.BotApiError (BotForbiddenError for 403);
@@ -33,7 +35,7 @@ from typing import IO, Any
 
 import httpx
 
-from matele._http import DEFAULT_MAX_DOWNLOAD, TooLargeError, is_connection_failure, read_limited
+from matele._http import DEFAULT_MAX_DOWNLOAD, TooLargeError, is_connection_failure, never_sent, read_limited
 from matele.errors import BotApiError, BotForbiddenError, BotUnavailableError, ConnectionGuard
 from matele.types import TELEGRAM
 
@@ -46,6 +48,12 @@ RETRY_DELAYS = (1.0, 2.0, 4.0)
 FLOOD_RETRIES = 2
 RETRY_AFTER_CAP = 60.0
 _PROBES = {"getUpdates", "getMe", "deleteWebhook", "getWebhookInfo"}
+# Methods that put a new message into a chat. A 502 or 504 doesn't say
+# whether Telegram did it before the gateway gave up, so they are not
+# repeated then: a repeat could deliver the message twice. 429 and 503
+# mean the request was turned away, and are repeated.
+_CREATES = ("send", "copy", "forward")
+_SAFE_TO_REPEAT = {429, 503}
 
 _sleep = asyncio.sleep  # patched in tests
 
@@ -150,6 +158,7 @@ class TelegramApi:
 		params = {k: v for k, v in params.items() if v is not None}
 		files = {k: v for k, v in params.items() if isinstance(v, InputFile)}
 		probe = method in _PROBES
+		creates = method.startswith(_CREATES) and method != "sendChatAction"
 		flood_left, retry = FLOOD_RETRIES, 0
 		# A stream that can't be rewound can't be sent twice: no retries then.
 		repeatable = all(_rewindable(f.source) for f in files.values())
@@ -180,7 +189,7 @@ class TelegramApi:
 				logger.info("Telegram flood control on %s, waiting %ss", method, delay)
 				await _sleep(delay)
 				continue
-			if status in RETRY_STATUSES and retry < len(RETRY_DELAYS):
+			if status in RETRY_STATUSES and retry < len(RETRY_DELAYS) and (not creates or status in _SAFE_TO_REPEAT):
 				await _sleep(RETRY_DELAYS[retry])
 				retry += 1
 				continue
@@ -227,7 +236,9 @@ class TelegramApi:
 			if is_connection_failure(exc):
 				self.guard.failed()
 			# str(exc) may echo the request URL, which contains the token
-			raise BotUnavailableError(0, "network", type(exc).__name__, platform=TELEGRAM) from None
+			raise BotUnavailableError(
+				0, "network", type(exc).__name__, platform=TELEGRAM, maybe_sent=not never_sent(exc)
+			) from None
 		finally:
 			for fh in opened:
 				fh.close()
