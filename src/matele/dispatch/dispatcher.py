@@ -18,7 +18,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import Any, NamedTuple, Protocol, TypeVar
 
 from matele.callbacks import CallbackError, CallbackRegistry, default_registry
@@ -138,6 +139,32 @@ class Dispatcher(Router):
 		doesn't leak into another, or into the private chat)."""
 		return StorageKey(event.from_user.platform, event.from_user.id, event_chat_id(event))
 
+	@asynccontextmanager
+	async def exclusive(self, key: StorageKey) -> AsyncIterator[None]:
+		"""Holds the storage's own lock on a conversation, if it has one
+		(RedisStorage does), so other processes sharing the storage wait
+		with that person's events. Polling and Webhook wrap feed() in it.
+		If the lock can't be taken (the storage is down), the event is
+		handled anyway: feed() will report the storage error."""
+		make = getattr(self.storage, "lock", None)
+		if make is None:
+			yield
+			return
+		held = make(key)
+		try:
+			await held.__aenter__()
+		except Exception:
+			logger.exception("Could not lock the state of %s", key)
+			yield
+			return
+		try:
+			yield
+		finally:
+			try:
+				await held.__aexit__(None, None, None)
+			except Exception:
+				logger.exception("Could not unlock the state of %s", key)
+
 	async def feed(self, event: IncomingEvent) -> bool:
 		"""Processes one event. True if a handler took it. Never raises:
 		errors (of handlers, middleware or the storage) go to the error
@@ -145,7 +172,9 @@ class Dispatcher(Router):
 
 		Feed one person's events one at a time (polling and Webhook do):
 		two events of the same person handled at once would both read the
-		same state and the later save would overwrite the earlier one."""
+		same state and the later save would overwrite the earlier one.
+		When calling feed() yourself from several processes, wrap it in
+		`async with dp.exclusive(dp.storage_key(event))`."""
 		self.freeze()
 		key = self.storage_key(event)
 		try:

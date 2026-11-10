@@ -46,6 +46,13 @@ class Storage(Protocol):
 	async def close(self) -> None: ...
 
 
+# A storage shared by several processes may also have
+#
+# 	def lock(self, key: StorageKey) -> AbstractAsyncContextManager[None]
+#
+# held while an event of that conversation is handled (see RedisStorage).
+
+
 class MemoryStorage:
 	"""In-process dict: fast, lost on restart, not shared between processes."""
 

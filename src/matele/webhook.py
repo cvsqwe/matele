@@ -157,7 +157,8 @@ class Webhook:
 		return 200
 
 	async def _feed(self, event: IncomingEvent) -> None:
-		async with self._locks.hold(self.dp.storage_key(event)):
+		key = self.dp.storage_key(event)
+		async with self._locks.hold(key), self.dp.exclusive(key):
 			await self.dp.feed(event)
 
 	# ------------------------------------------------------------ ASGI

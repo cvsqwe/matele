@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -21,9 +22,18 @@ class FakeRedis:
 		value = self.values.get(name)
 		return value.encode() if value is not None else None  # redis returns bytes
 
-	async def set(self, name: str, value: str, ex: int | None = None) -> Any:
+	async def set(self, name: str, value: str, ex: int | None = None, px: int | None = None, nx: bool = False) -> Any:
+		if nx and name in self.values:
+			return None
 		self.values[name], self.expiry[name] = value, ex
 		return True
+
+	async def eval(self, script: str, numkeys: int, *keys_and_args: str) -> Any:
+		name, token = keys_and_args  # the release script: delete if still ours
+		if self.values.get(name) == token:
+			del self.values[name]
+			return 1
+		return 0
 
 	async def delete(self, *names: str) -> Any:
 		return sum(self.values.pop(n, None) is not None for n in names)
@@ -125,3 +135,52 @@ async def test_redis_keys_ttl_and_close():
 def test_redis_from_url_builds_a_client():
 	storage = RedisStorage.from_url("redis://localhost:6379/0", ttl=10)  # no connection until used
 	assert storage.ttl == 10 and storage.key(PRIVATE_KEY) == "matele:max:7:0"
+
+
+async def test_redis_lock_keeps_two_processes_from_overwriting_each_other():
+	"""Two bot processes (two dispatchers, one Redis) get two events of one
+	person at the same moment: both must count."""
+	fake = FakeRedis()
+	bot = FakeBot()
+
+	def process() -> Dispatcher:
+		dp = Dispatcher(storage=RedisStorage(fake), registry=CallbackRegistry())
+
+		@dp.message()
+		async def count(ctx: Context):
+			seen = ctx.state.get("seen", 0)
+			await asyncio.sleep(0.01)  # the other process gets in here
+			ctx.state.update(seen=seen + 1)
+
+		return dp
+
+	async def handle(dp: Dispatcher) -> None:
+		event = bot.message("hi", user_id=7)
+		async with dp.exclusive(dp.storage_key(event)):
+			await dp.feed(event)
+
+	first, second = process(), process()
+	await asyncio.gather(handle(first), handle(second))
+	record = await first.storage.get(StorageKey("max", 7))
+	assert record is not None and record.data == {"seen": 2}
+	assert not any(name.endswith(":lock") for name in fake.values)  # released
+
+
+async def test_events_are_still_handled_when_the_lock_cannot_be_taken():
+	class DownRedis(FakeRedis):
+		async def set(self, name, value, ex=None, px=None, nx=False):
+			if nx:
+				raise ConnectionError("redis is down")
+			return await super().set(name, value, ex)
+
+	dp = Dispatcher(storage=RedisStorage(DownRedis()), registry=CallbackRegistry())
+	bot = FakeBot()
+
+	@dp.message()
+	async def hello(ctx: Context):
+		await ctx.reply("hi")
+
+	event = bot.message("hi")
+	async with dp.exclusive(dp.storage_key(event)):
+		assert await dp.feed(event) is True
+	assert bot.sent[-1].text == "hi"

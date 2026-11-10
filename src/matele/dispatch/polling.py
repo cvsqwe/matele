@@ -75,7 +75,8 @@ async def poll(
 	running: set[asyncio.Task[None]] = set()
 
 	async def handle(event: IncomingEvent) -> None:
-		async with locks.hold(dp.storage_key(event)):
+		key = dp.storage_key(event)
+		async with locks.hold(key), dp.exclusive(key):
 			await dp.feed(event)
 
 	backoff, connected = 1.0, False
