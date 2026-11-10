@@ -46,6 +46,7 @@ UnreachableHook = Callable[[str, int, BotApiError], Awaitable[None]]
 
 DEFAULT_RATE = 25.0  # messages per second per messenger
 RETRY_ATTEMPTS = 2  # extra tries while a messenger is briefly unreachable
+RETRY_MIN_WAIT = 1.0
 RETRY_MAX_WAIT = 35.0
 OUTAGE_TRIPS = 3  # network failures in a row = an outage: stop waiting
 
@@ -161,7 +162,7 @@ class Hub:
 				if guard is None or attempt >= RETRY_ATTEMPTS or guard.trips >= OUTAGE_TRIPS:
 					raise
 				attempt += 1
-				wait = min(guard.retry_in(), RETRY_MAX_WAIT)
+				wait = min(max(guard.retry_in(), RETRY_MIN_WAIT), RETRY_MAX_WAIT)
 				logger.info("%s unreachable, retrying delivery to %s in %.0fs", bot.title, user_id, wait)
 				await _sleep(wait)
 			except BotApiError as exc:

@@ -127,8 +127,13 @@ async def test_forbidden_and_token_never_in_errors(tg):
 	with pytest.raises(BotUnavailableError) as info:
 		await api.call("sendMessage", chat_id=1, text="x")
 	assert "SECRET" not in str(info.value)
-	with pytest.raises(BotUnavailableError):  # guard: fails fast
+	tg.raise_("sendMessage", httpx.ConnectError("still down"))
+	with pytest.raises(BotUnavailableError):
 		await api.call("sendMessage", chat_id=1, text="x")
+	calls = len(tg.calls)
+	with pytest.raises(BotUnavailableError):  # guard: two failures in a row, fails fast
+		await api.call("sendMessage", chat_id=1, text="x")
+	assert len(tg.calls) == calls
 	await api.call("getMe")  # probes bypass the guard and reopen it
 	await api.call("sendMessage", chat_id=1, text="x")
 

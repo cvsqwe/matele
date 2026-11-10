@@ -137,13 +137,14 @@ async def test_attachment_not_ready_is_retried(server, sleeps):
 
 
 async def test_network_failure_trips_the_guard(server):
-	server.on("POST", "/messages", httpx.ConnectError("down"))
+	server.on("POST", "/messages", httpx.ConnectError("down"), httpx.ConnectError("down"))
 	api = server.api()
-	with pytest.raises(BotUnavailableError):
-		await api.send_message(user_id=1, text="x")
+	for _ in range(2):  # the second failure in a row is an outage
+		with pytest.raises(BotUnavailableError):
+			await api.send_message(user_id=1, text="x")
 	with pytest.raises(BotUnavailableError, match="unreachable"):
 		await api.send_message(user_id=1, text="x")  # fails fast: no request made
-	assert len(server.calls) == 1
+	assert len(server.calls) == 2
 	server.on("GET", "/updates", {"updates": []})
 	await api.get_updates()  # long polling is the probe and reopens the guard
 	server.on("POST", "/messages", {"message": message()})
@@ -239,3 +240,12 @@ async def test_download_refuses_a_file_over_the_limit(server):
 		await api.download(url)
 	assert caught.value.status_code == 413 and caught.value.code == "download.too_large"
 	assert await api.download(url, max_size=None) == b"x" * 2000
+
+
+async def test_slow_answers_do_not_trip_the_guard(server):
+	server.on("POST", "/messages", *(httpx.ReadTimeout("slow") for _ in range(5)))
+	api = server.api()
+	for _ in range(5):
+		with pytest.raises(BotUnavailableError, match="ReadTimeout"):
+			await api.send_message(user_id=1, text="x")
+	assert len(server.calls) == 5 and api.guard.trips == 0  # every call was really tried

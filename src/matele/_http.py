@@ -9,6 +9,16 @@ import httpx
 DEFAULT_MAX_DOWNLOAD = 50 * 1024 * 1024
 
 
+def is_connection_failure(exc: Exception) -> bool:
+	"""Does this failure say the API can't be reached (refused, reset or
+	timed-out connection, DNS, proxy)? A timeout while reading, writing or
+	waiting for a free connection doesn't: the API was reached, this one
+	call was slow or the client is busy."""
+	return isinstance(exc, httpx.TransportError) and not isinstance(
+		exc, httpx.ReadTimeout | httpx.WriteTimeout | httpx.PoolTimeout
+	)
+
+
 class TooLargeError(Exception):
 	"""The body is bigger than the limit."""
 

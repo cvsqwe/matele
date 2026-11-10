@@ -65,17 +65,23 @@ def is_unreachable(exc: BaseException) -> bool:
 
 
 class ConnectionGuard:
-	"""After a network failure, ordinary calls to that messenger fail
-	instantly for `cooldown` seconds instead of each hanging until its own
-	timeout, so a broadcast isn't held up by one unreachable messenger
-	while the other works fine. Long polling bypasses the guard (it is the
-	probe) and closes it as soon as the API answers."""
+	"""A circuit breaker per messenger. After `threshold` failed connections
+	in a row, ordinary calls to that messenger fail instantly for
+	`cooldown` seconds instead of each hanging until its own timeout, so a
+	broadcast isn't held up by one unreachable messenger while the other
+	works fine. Long polling bypasses the guard (it is the probe) and
+	closes it as soon as the API answers.
 
-	def __init__(self, platform: str, cooldown: float = 30.0):
+	Only failures to reach the API count (see `is_connection_failure`): one
+	slow answer or one stalled upload says nothing about the next call, and
+	must not silence the bot for everyone."""
+
+	def __init__(self, platform: str, cooldown: float = 30.0, threshold: int = 2):
 		self.platform = platform
 		self.cooldown = cooldown
+		self.threshold = max(threshold, 1)
 		self._down_until = 0.0
-		# Network failures in a row since the API last answered: tells a
+		# Connection failures in a row since the API last answered: tells a
 		# short blip (worth waiting out) from an outage.
 		self.trips = 0
 
@@ -88,8 +94,9 @@ class ConnectionGuard:
 		return max(0.0, self._down_until - time.monotonic())
 
 	def failed(self) -> None:
-		self._down_until = time.monotonic() + self.cooldown
 		self.trips += 1
+		if self.trips >= self.threshold:
+			self._down_until = time.monotonic() + self.cooldown
 
 	def ok(self) -> None:
 		self._down_until = 0.0

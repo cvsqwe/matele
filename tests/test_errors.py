@@ -41,6 +41,8 @@ def test_guard_fails_fast_during_cooldown_and_reopens(clock):
 	guard.check()  # closed: passes
 	guard.failed()
 	assert guard.trips == 1
+	guard.check()  # one failure is not an outage yet
+	guard.failed()
 	with pytest.raises(BotUnavailableError):
 		guard.check()
 	clock.now += 10

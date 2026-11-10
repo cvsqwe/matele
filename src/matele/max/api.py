@@ -31,7 +31,7 @@ from typing import IO, Any
 import certifi
 import httpx
 
-from matele._http import DEFAULT_MAX_DOWNLOAD, TooLargeError, read_limited
+from matele._http import DEFAULT_MAX_DOWNLOAD, TooLargeError, is_connection_failure, read_limited
 from matele.errors import BotApiError, BotForbiddenError, BotUnavailableError, ConnectionGuard
 from matele.max import models as m
 from matele.types import MAX
@@ -148,7 +148,8 @@ class MaxApi:
 					timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
 				)
 			except httpx.TransportError as exc:
-				self.guard.failed()
+				if is_connection_failure(exc):
+					self.guard.failed()
 				raise BotUnavailableError(0, "network", f"{type(exc).__name__}: {exc}", platform=MAX) from None
 			self.guard.ok()
 			if resp.status_code in RETRY_STATUSES and attempt < len(RETRY_DELAYS):
@@ -463,7 +464,8 @@ class MaxApi:
 		try:
 			resp = await self._files.post(url, files={"data": (filename, data)})
 		except httpx.TransportError as exc:
-			self.guard.failed()
+			if is_connection_failure(exc):
+				self.guard.failed()
 			raise BotUnavailableError(0, "network", f"{type(exc).__name__}: {exc}", platform=MAX) from None
 		self.guard.ok()
 		if resp.status_code >= 400:

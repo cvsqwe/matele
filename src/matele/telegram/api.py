@@ -30,7 +30,7 @@ from typing import IO, Any
 
 import httpx
 
-from matele._http import DEFAULT_MAX_DOWNLOAD, TooLargeError, read_limited
+from matele._http import DEFAULT_MAX_DOWNLOAD, TooLargeError, is_connection_failure, read_limited
 from matele.errors import BotApiError, BotForbiddenError, BotUnavailableError, ConnectionGuard
 from matele.types import TELEGRAM
 
@@ -214,7 +214,8 @@ class TelegramApi:
 					timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
 				)
 		except httpx.TransportError as exc:
-			self.guard.failed()
+			if is_connection_failure(exc):
+				self.guard.failed()
 			# str(exc) may echo the request URL, which contains the token
 			raise BotUnavailableError(0, "network", type(exc).__name__, platform=TELEGRAM) from None
 		finally:
@@ -239,5 +240,6 @@ class TelegramApi:
 				except TooLargeError:
 					raise api_error(413, "download", f"the file is over {limit} bytes") from None
 		except httpx.TransportError as exc:
-			self.guard.failed()
+			if is_connection_failure(exc):
+				self.guard.failed()
 			raise BotUnavailableError(0, "network", type(exc).__name__, platform=TELEGRAM) from None
