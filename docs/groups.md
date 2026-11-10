@@ -48,7 +48,7 @@ async def members(ctx: Context):
             await ctx.reply("Спасибо, что добавили! Команды: /help")
         return
     if update.joined:
-        await ctx.reply(f"Добро пожаловать, {update.member.name}!")
+        await ctx.reply(f"Добро пожаловать, {escape(update.member.name)}!")
 ```
 
 В `ctx.member_update`:

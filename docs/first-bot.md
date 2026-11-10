@@ -39,7 +39,7 @@ SQLite и всё остальное работает без дополнител
 import logging
 import os
 
-from matele import BotClient, Context, Dispatcher
+from matele import BotClient, Context, Dispatcher, escape
 from matele.max import MaxBot
 from matele.telegram import TelegramBot
 
@@ -48,13 +48,13 @@ dp = Dispatcher()
 
 @dp.command("start", description="Начать")
 async def start(ctx: Context):
-    await ctx.reply(f"Привет, {ctx.user.name}! Напишите что-нибудь, и я повторю.")
+    await ctx.reply(f"Привет, {escape(ctx.user.name)}! Напишите что-нибудь, и я повторю.")
 
 
 @dp.message()
 async def echo(ctx: Context):
     if ctx.text:
-        await ctx.reply(ctx.text)
+        await ctx.reply(escape(ctx.text))
     else:
         await ctx.reply("Я понимаю только текст")
 

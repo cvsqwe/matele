@@ -58,3 +58,11 @@ def test_guard_counts_trips_until_the_api_answers(clock):
 	guard.ok()
 	assert guard.trips == 0
 	guard.check()
+
+
+def test_escape_makes_outside_text_safe_for_html_messages():
+	from matele import escape
+
+	assert escape('<a href="x">Ann & Co</a>') == '&lt;a href="x"&gt;Ann &amp; Co&lt;/a&gt;'
+	assert escape('"x"', quote=True) == "&quot;x&quot;"
+	assert escape(None) == "" and escape(42) == "42"

@@ -5,7 +5,7 @@
 ## Анкета из трёх шагов
 
 ```python
-from matele import Context, State, StatesGroup
+from matele import Context, State, StatesGroup, escape
 
 
 class Signup(StatesGroup):
@@ -47,7 +47,7 @@ async def got_age(ctx: Context):
 async def got_city(ctx: Context):
     name, age = ctx.state.get("name"), ctx.state.get("age")
     ctx.state.clear()
-    await ctx.reply(f"Готово: {name}, {age}, {ctx.text}")
+    await ctx.reply(f"Готово: {escape(name)}, {age}, {escape(ctx.text)}")
 ```
 
 `/cancel` работает на любом шаге: команды проверяются раньше хендлеров состояний (см. [порядок хендлеров](handlers.md#порядок-хендлеров)).

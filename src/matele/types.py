@@ -4,6 +4,7 @@ a reply always goes back through the same messenger."""
 
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +18,20 @@ PRIVATE = "private"
 GROUP = "group"
 
 _START_PARAM = re.compile(r"^[A-Za-z0-9_-]{0,512}$")
+
+
+def escape(value: object, *, quote: bool = False) -> str:
+	"""Makes text from outside (a person's name, what they typed, a file
+	name) safe to put into a message: messages are sent as HTML, and a "<"
+	or "&" in such text would otherwise break the markup, or add markup
+	of the sender's choosing (a link, say). None becomes "".
+
+		await ctx.reply(f"Привет, <b>{escape(ctx.user.name)}</b>!")
+
+	`quote=True` also escapes quotes, for a value inside an attribute:
+	f'<a href="{escape(url, quote=True)}">'."""
+	return "" if value is None else html.escape(str(value), quote=quote)
+
 
 # A file to send: its bytes, a path, or a binary file object (streamed).
 FileSource = bytes | Path | IO[bytes]

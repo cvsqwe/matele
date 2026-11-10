@@ -13,10 +13,12 @@ await ctx.reply("<b>Жирный</b>, <i>курсив</i>, <code>код</code> �
 Если вставляете в сообщение то, что прислал человек, экранируйте это, иначе символы `<`, `>` и `&` в его тексте сломают разметку:
 
 ```python
-import html
+from matele import escape
 
-await ctx.reply(f"Вы написали: <b>{html.escape(ctx.text)}</b>")
+await ctx.reply(f"Вы написали: <b>{escape(ctx.text)}</b>")
 ```
+
+Это касается всего, что пришло снаружи: текста сообщения, имени человека, аргументов команды, имени файла. Без экранирования человек с именем вида `<a href="...">` добавит в сообщение бота свою ссылку. `escape(None)` возвращает пустую строку. Для значения внутри атрибута, например адреса в `href`, экранируйте и кавычки: `escape(url, quote=True)`.
 
 Если Telegram всё же не смог разобрать HTML, matele отправит то же сообщение простым текстом, чтобы оно не потерялось.
 
@@ -74,7 +76,7 @@ async def got_file(ctx: Context):
     att = ctx.message.attachments[0]
     content, filename = await ctx.bot.download_file(att.token, file_type=att.type, filename=att.filename, url=att.url)
     await storage.save(filename, content)
-    await ctx.reply(f"Сохранил {filename}, {len(content)} байт")
+    await ctx.reply(f"Сохранил {escape(filename)}, {len(content)} байт")
 ```
 
 Файл скачивается в память целиком, поэтому размер ограничен: по умолчанию 50 МБ, файл больше вызовет `BotApiError` с кодом 413. Лимит задаётся при создании клиента, например `MaxBot(token, api=MaxApi(token, max_download=200 * 1024 * 1024))`. `max_download=None` снимает ограничение.

@@ -40,6 +40,7 @@ from matele.types import (
 	Keyboard,
 	Message,
 	User,
+	escape,
 )
 
 __version__ = "0.1.0.dev0"
@@ -88,6 +89,7 @@ __all__ = [
 	"action",
 	"as_filter",
 	"callback",
+	"escape",
 	"is_unreachable",
 	"parse",
 	"platform_title",

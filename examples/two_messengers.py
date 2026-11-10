@@ -21,6 +21,7 @@ from matele import (
 	State,
 	StatesGroup,
 	callback,
+	escape,
 	platform_title,
 )
 from matele.max import MaxBot
@@ -41,7 +42,9 @@ class Feedback(StatesGroup):
 @dp.command("start", description="Начать заново")
 async def start(ctx: Context) -> None:
 	keyboard = Keyboard([[Button("🍵 Чай", Vote("tea").pack()), Button("☕ Кофе", Vote("coffee").pack())]])
-	await ctx.reply(f"Привет, {ctx.user.name}! Вы пишете из {platform_title(ctx.platform)}.\nЧай или кофе?", keyboard)
+	await ctx.reply(
+		f"Привет, {escape(ctx.user.name)}! Вы пишете из {platform_title(ctx.platform)}.\nЧай или кофе?", keyboard
+	)
 
 
 @dp.callback(Vote)

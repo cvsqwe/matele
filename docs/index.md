@@ -3,7 +3,7 @@
 matele это фреймворк на Python для ботов, которые работают сразу в MAX и Telegram. Хендлеры пишутся один раз, а различия между мессенджерами matele берёт на себя: как устроены идентификаторы сообщений, какие ограничения у кнопок, как приходят ссылки на запуск бота, что умеет каждый мессенджер в группах.
 
 ```python
-from matele import Context, Dispatcher
+from matele import Context, Dispatcher, escape
 from matele.max import MaxBot
 from matele.telegram import TelegramBot
 
@@ -12,12 +12,12 @@ dp = Dispatcher()
 
 @dp.command("start", description="Начать")
 async def start(ctx: Context):
-    await ctx.reply(f"Привет, {ctx.user.name}!")
+    await ctx.reply(f"Привет, {escape(ctx.user.name)}!")
 
 
 @dp.message()
 async def echo(ctx: Context):
-    await ctx.reply(ctx.text or "Это не текст")
+    await ctx.reply(escape(ctx.text) or "Это не текст")
 
 
 dp.run_polling(MaxBot(MAX_TOKEN), TelegramBot(TG_TOKEN))

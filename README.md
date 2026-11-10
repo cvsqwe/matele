@@ -23,7 +23,7 @@ pip install "matele[webhook,redis] @ git+https://github.com/cvsqwe/matele"
 Бот, который здоровается, спрашивает имя и запоминает его. Один и тот же код работает в обоих мессенджерах:
 
 ```python
-from matele import Button, CallbackData, Context, Dispatcher, Keyboard, State, callback
+from matele import Button, CallbackData, Context, Dispatcher, Keyboard, State, callback, escape
 from matele.max import MaxBot
 from matele.telegram import TelegramBot
 
@@ -53,7 +53,7 @@ async def chose_language(ctx: Context, payload: Hello):
 async def got_name(ctx: Context):
     lang = ctx.state.get("lang")
     ctx.state.clear()
-    await ctx.reply(f"Приятно познакомиться, {ctx.text}!" if lang == "ru" else f"Nice to meet you, {ctx.text}!")
+    await ctx.reply(f"Приятно познакомиться, {escape(ctx.text)}!" if lang == "ru" else f"Nice to meet you, {escape(ctx.text)}!")
 
 
 dp.run_polling(MaxBot(MAX_TOKEN), TelegramBot(TG_TOKEN))
@@ -141,7 +141,7 @@ SQLite работает на стандартной библиотеке, нич
 async def welcome(ctx: Context):
     update = ctx.member_update
     if update.joined and not update.is_me:
-        await ctx.reply(f"Добро пожаловать, {update.member.name}!")
+        await ctx.reply(f"Добро пожаловать, {escape(update.member.name)}!")
 ```
 
 Команды вроде `/help@other_bot` бот пропускает: они адресованы не ему.
