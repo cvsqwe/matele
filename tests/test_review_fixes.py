@@ -266,3 +266,31 @@ async def test_feed_survives_a_failing_button_answer_and_still_saves_the_state()
 	assert await dp.feed(event) is True  # nothing escapes
 	record = await dp.storage.get(dp.storage_key(event))
 	assert record is not None and record.data == {"step": 1}
+
+
+async def test_logs_name_the_event_but_not_what_the_person_wrote(caplog):
+	dp = Dispatcher(registry=CallbackRegistry())
+	bot = FakeBot()
+
+	@dp.message()
+	async def boom(ctx):
+		raise RuntimeError("handler bug")
+
+	with caplog.at_level(logging.DEBUG):
+		await dp.feed(bot.message("my card is 4111 1111", user_id=7))
+	assert "Message from max user 7" in caplog.text
+	assert "4111" not in caplog.text
+
+
+async def test_a_broken_update_is_logged_without_its_contents(caplog):
+	tg = FakeTelegram()
+	bot = TelegramBot(TOKEN, api=tg.api())
+	tg.ok(
+		"getUpdates", [{"update_id": 9, "message": {"text": "secret words", "chat": {"type": "private"}, "from": {}}}]
+	)
+	tg.ok("getUpdates", [{"update_id": 10, "callback_query": {"data": "secret words"}}])
+	with caplog.at_level(logging.DEBUG):
+		await bot.get_events(timeout=1)
+		await bot.get_events(timeout=1)
+	assert "update 10 (callback_query)" in caplog.text
+	assert "secret words" not in caplog.text

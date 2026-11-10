@@ -45,6 +45,7 @@ from matele.types import (
 	Message,
 	User,
 	default_filename,
+	describe_update,
 	recipient,
 )
 from matele.webapp import DEFAULT_MAX_AGE, WebAppData, verify_init_data
@@ -112,7 +113,7 @@ class MaxBot:
 			try:
 				events.extend(self.parse_update(update))
 			except Exception:
-				logger.exception("Could not parse MAX update: %r", update.raw)
+				logger.exception("Could not parse MAX %s", describe_update(update.raw))
 		return events
 
 	async def _warn_about_webhooks(self) -> None:

@@ -36,7 +36,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any, Protocol
 
 from matele.dispatch.polling import KeyedLocks
-from matele.types import IncomingEvent, User
+from matele.types import IncomingEvent, User, describe_update
 
 if TYPE_CHECKING:
 	from matele.dispatch.dispatcher import Dispatcher
@@ -153,7 +153,7 @@ class Webhook:
 		try:
 			events = await bot.parse_webhook(data)
 		except Exception:  # a broken update must not make the messenger retry it forever
-			logger.exception("%s: could not parse a webhook update: %r", bot.title, data)
+			logger.exception("%s: could not parse a webhook %s", bot.title, describe_update(data))
 			return 200
 		for event in events:
 			task = asyncio.create_task(self._feed(event))

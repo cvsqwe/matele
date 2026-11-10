@@ -133,6 +133,25 @@ class ChatMemberUpdate:
 IncomingEvent = Event | ChatStatus | ChatMemberUpdate
 
 
+def describe(event: object) -> str:
+	"""An event for the log: what it is and whose, without what the person
+	wrote (logs outlive conversations and are read by more people)."""
+	user = getattr(event, "from_user", None)
+	who = f"{user.platform} user {user.id}" if isinstance(user, User) else "?"
+	message = event if isinstance(event, Message) else getattr(event, "message", None)
+	chat = getattr(event, "chat_id", None) or (message.chat_id if isinstance(message, Message) else None)
+	return f"{type(event).__name__} from {who}" + (f" in chat {chat}" if chat is not None else "")
+
+
+def describe_update(data: object) -> str:
+	"""A raw update for the log: its id, type and field names, no contents."""
+	if not isinstance(data, dict):
+		return type(data).__name__
+	ident = data.get("update_id", data.get("timestamp"))
+	kind = data.get("update_type") or ", ".join(sorted(k for k in data if k not in ("update_id", "timestamp")))
+	return f"update {ident} ({kind})"
+
+
 class BotClient(Protocol):
 	"""What every transport offers the framework.
 

@@ -52,6 +52,7 @@ from matele.types import (
 	Message,
 	User,
 	default_filename,
+	describe_update,
 	recipient,
 )
 from matele.webapp import DEFAULT_MAX_AGE, WebAppData, verify_init_data
@@ -258,7 +259,7 @@ class TelegramBot:
 			try:
 				events.extend(await self.parse_update(update))
 			except Exception:
-				logger.exception("Could not parse Telegram update: %r", update)
+				logger.exception("Could not parse Telegram %s", describe_update(update))
 		return events
 
 	async def _clear_webhook(self) -> None:

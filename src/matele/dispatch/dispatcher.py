@@ -25,7 +25,16 @@ from matele.dispatch.context import Context
 from matele.dispatch.filters import run_filter
 from matele.dispatch.router import Handler, Kind, Router
 from matele.fsm import FSMContext, MemoryStorage, Storage, StorageKey, state_matches
-from matele.types import PRIVATE, BotClient, CallbackQuery, ChatMemberUpdate, ChatStatus, IncomingEvent, Message
+from matele.types import (
+	PRIVATE,
+	BotClient,
+	CallbackQuery,
+	ChatMemberUpdate,
+	ChatStatus,
+	IncomingEvent,
+	Message,
+	describe,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +162,7 @@ class Dispatcher(Router):
 			nonlocal handled
 			handler = await self._resolve(ctx)
 			if handler is None:
-				logger.debug("No handler for %r", event)
+				logger.debug("No handler for %s", describe(event))
 				return
 			handled = True
 			if handler.payload_cls is not None:
@@ -250,7 +259,7 @@ class Dispatcher(Router):
 
 	async def _handle_error(self, ctx: Context, exc: Exception) -> None:
 		if not self._error_handlers:
-			logger.exception("Unhandled error on %r", ctx.event, exc_info=exc)
+			logger.exception("Unhandled error on %s", describe(ctx.event), exc_info=exc)
 			return
 		for handler in self._error_handlers:
 			try:
