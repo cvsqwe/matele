@@ -331,12 +331,17 @@ class Dispatcher(Router):
 		timeout: int = 30,
 		shutdown_timeout: float = SHUTDOWN_TIMEOUT,
 		concurrency: int = CONCURRENCY,
+		at_least_once: bool = False,
 	) -> None:
 		"""Long-polls every client until cancelled. The command menu is
 		published once each messenger is first reached. On cancel, handlers
 		still running get `shutdown_timeout` seconds to finish. At most
 		`concurrency` events per messenger are handled at once; beyond
-		that polling waits, and the messenger keeps the rest."""
+		that polling waits, and the messenger keeps the rest.
+
+		`at_least_once=True`: an event whose handling was cut short by a
+		crash comes again after a restart (handlers must cope with
+		repeats); see matele.dispatch.polling."""
 		from matele.dispatch.polling import poll
 
 		if not clients:
@@ -344,7 +349,14 @@ class Dispatcher(Router):
 		self.freeze()
 		await asyncio.gather(
 			*(
-				poll(self, client, timeout=timeout, shutdown_timeout=shutdown_timeout, concurrency=concurrency)
+				poll(
+					self,
+					client,
+					timeout=timeout,
+					shutdown_timeout=shutdown_timeout,
+					concurrency=concurrency,
+					at_least_once=at_least_once,
+				)
 				for client in clients
 			)
 		)
@@ -355,6 +367,7 @@ class Dispatcher(Router):
 		timeout: int = 30,
 		shutdown_timeout: float = SHUTDOWN_TIMEOUT,
 		concurrency: int = CONCURRENCY,
+		at_least_once: bool = False,
 	) -> None:
 		"""Blocking entry point: polls until Ctrl+C or SIGTERM (what Docker
 		and systemd stop a service with), lets running handlers finish (up
@@ -370,7 +383,11 @@ class Dispatcher(Router):
 				pass  # Windows, or not the main thread: Ctrl+C still works
 			try:
 				await self.start_polling(
-					*clients, timeout=timeout, shutdown_timeout=shutdown_timeout, concurrency=concurrency
+					*clients,
+					timeout=timeout,
+					shutdown_timeout=shutdown_timeout,
+					concurrency=concurrency,
+					at_least_once=at_least_once,
 				)
 			finally:
 				for client in clients:

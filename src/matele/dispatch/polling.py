@@ -5,10 +5,18 @@ backoff while the other carries on.
 Events run as tasks, so one slow handler doesn't stall polling, while a
 per-person lock keeps each person's own events in order.
 
-Delivery is at most once: a batch of events counts as received when the
-next one is asked for, not when its handlers finish. So on a stop the
-handlers already running are given time to finish; an event is lost only
-if the process is killed in the middle of handling it.
+A messenger takes a batch of events for received when the next one is
+asked for. By default that happens while the batch's handlers may still
+be running, so delivery is at most once: on a stop the running handlers
+are given time to finish, and an event is lost only if the process is
+killed in the middle of handling it.
+
+With `at_least_once=True` the next batch is asked for only after every
+handler of the current one has finished. An event whose handling was cut
+short then comes again after a restart, and so may events of the same
+batch that were already handled: handlers must cope with a repeat (check
+"is this order already paid?" before paying). The price is speed: one
+slow handler holds up that messenger's next batch.
 """
 
 from __future__ import annotations
@@ -67,6 +75,7 @@ async def poll(
 	max_backoff: float = MAX_BACKOFF,
 	shutdown_timeout: float = SHUTDOWN_TIMEOUT,
 	concurrency: int = CONCURRENCY,
+	at_least_once: bool = False,
 ) -> None:
 	"""Long-polls one messenger until cancelled; never raises otherwise.
 	On cancel, events still being handled get `shutdown_timeout` seconds
@@ -75,7 +84,11 @@ async def poll(
 
 	At most `concurrency` events are handled at once. When handlers can't
 	keep up, polling waits for a free slot instead of piling up tasks: the
-	messenger keeps the events that weren't asked for yet."""
+	messenger keeps the events that weren't asked for yet.
+
+	`at_least_once`: ask for the next batch only when the current one is
+	fully handled, so events cut short by a crash come again (see the
+	module docstring)."""
 	log = logging.getLogger(f"matele.polling.{client.platform}")
 	locks = KeyedLocks()
 	running: set[asyncio.Task[None]] = set()
@@ -107,11 +120,15 @@ async def poll(
 				backoff = min(backoff * 2, max_backoff)
 				continue
 			backoff = 1.0
+			batch: list[asyncio.Task[None]] = []
 			for event in events:
 				await slots.acquire()
 				task = asyncio.create_task(handle(event))
 				running.add(task)
 				task.add_done_callback(running.discard)
+				batch.append(task)
+			if at_least_once and batch:
+				await asyncio.wait(batch)
 			# Let the handlers run even if the transport answered without
 			# really waiting (a proxy that ignores long polling, a test fake).
 			await asyncio.sleep(0)

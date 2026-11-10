@@ -566,3 +566,40 @@ async def test_polling_handles_a_bounded_number_of_events_at_once(dp):
 	task.cancel()
 	await asyncio.gather(task, return_exceptions=True)
 	assert most == 3
+
+
+async def test_at_least_once_asks_for_the_next_batch_only_when_this_one_is_handled(dp):
+	"""Asking for the next batch is what tells the messenger the current one
+	arrived: it must not happen while a handler is still running."""
+
+	class Recording(FakeBot):
+		def __init__(self) -> None:
+			super().__init__()
+			self.log: list[str] = []
+
+		async def get_events(self, timeout: int = 30):
+			self.log.append("ask")
+			return await super().get_events(timeout)
+
+	bot = Recording()
+	release = asyncio.Event()
+
+	@dp.message()
+	async def slow(ctx):
+		bot.log.append(f"start {ctx.text}")
+		await release.wait()
+		bot.log.append(f"done {ctx.text}")
+
+	bot.push(bot.message("a"))
+	task = asyncio.create_task(dp.start_polling(bot, timeout=1, at_least_once=True))
+	while "start a" not in bot.log:
+		await asyncio.sleep(0)
+	for _ in range(20):
+		await asyncio.sleep(0)
+	assert bot.log == ["ask", "start a"]  # not asking again yet
+	release.set()
+	while bot.log.count("ask") < 2:
+		await asyncio.sleep(0)
+	assert bot.log == ["ask", "start a", "done a", "ask"]
+	task.cancel()
+	await asyncio.gather(task, return_exceptions=True)
