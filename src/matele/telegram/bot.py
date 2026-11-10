@@ -193,15 +193,19 @@ class TelegramBot:
 		aliases: CallbackAliases | None = None,
 		platform: str = TELEGRAM,
 		app_url: str | None = None,
+		replace_webhook: bool = False,
 	):
 		"""`app_url`: the https address of the bot's mini app, for
-		Button(app=...); the button's value is added as ?startapp=..."""
+		Button(app=...); the button's value is added as ?startapp=...
+		`replace_webhook`: let polling remove a webhook set for this token.
+		Off by default: the webhook may belong to a running deployment."""
 		self.api = api or TelegramApi(token, api_url=api_url, proxy=proxy)
 		self._token = token
 		self.app_url = app_url
 		self.aliases = aliases or CallbackAliases()
 		self.platform = platform
 		self.me: User | None = None
+		self.replace_webhook = replace_webhook
 		self._offset: int | None = None
 		self._webhook_cleared = False
 
@@ -237,8 +241,7 @@ class TelegramBot:
 	# ------------------------------------------------------------ incoming
 	async def get_events(self, timeout: int = 30) -> list[IncomingEvent]:
 		if not self._webhook_cleared:
-			await self.api.call("deleteWebhook")  # getUpdates refuses to work while a webhook is set
-			self._webhook_cleared = True
+			await self._clear_webhook()
 		updates = (
 			await self.api.call(
 				"getUpdates",
@@ -257,6 +260,25 @@ class TelegramBot:
 			except Exception:
 				logger.exception("Could not parse Telegram update: %r", update)
 		return events
+
+	async def _clear_webhook(self) -> None:
+		"""getUpdates refuses to work while a webhook is set. The webhook is
+		only removed when asked to (replace_webhook=True): it may be the one
+		a running deployment of the bot gets its updates through, and a local
+		run with the same token must not silence it."""
+		info = await self.api.call("getWebhookInfo")
+		url = (info or {}).get("url") if isinstance(info, dict) else None
+		if url:
+			if not self.replace_webhook:
+				raise api_error(
+					409,
+					"getUpdates",
+					f"Telegram sends this bot's updates to the webhook {url}, so polling can't get them. "
+					"Remove it with `await bot.delete_webhook()`, or pass TelegramBot(replace_webhook=True)",
+				)
+			logger.warning("Telegram: removing the webhook %s to start polling", url)
+			await self.api.call("deleteWebhook")
+		self._webhook_cleared = True
 
 	async def parse_update(self, update: dict[str, Any]) -> list[IncomingEvent]:
 		"""One Telegram update -> matele events (usually one; none for

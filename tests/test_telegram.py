@@ -226,8 +226,27 @@ async def test_get_events_clears_the_webhook_once_and_advances_the_offset(bot, t
 	events = await bot.get_events(timeout=5)
 	await bot.get_events(timeout=5)
 	assert [e.text for e in events if isinstance(e, Message)] == ["a", "b"]
-	assert tg.methods() == ["deleteWebhook", "getUpdates", "getUpdates"]
+	assert tg.methods() == ["getWebhookInfo", "getUpdates", "getUpdates"]  # checked once, nothing to remove
 	assert tg.calls[2][1]["offset"] == 42
+
+
+async def test_polling_does_not_remove_a_webhook_on_its_own(bot, tg):
+	tg.ok("getWebhookInfo", {"url": "https://prod.example.com/tg"}, {"url": ""})
+	tg.ok("getUpdates", [])
+	with pytest.raises(BotApiError, match="replace_webhook") as caught:
+		await bot.get_events(timeout=5)
+	assert caught.value.status_code == 409
+	assert "deleteWebhook" not in tg.methods() and "getUpdates" not in tg.methods()
+	await bot.get_events(timeout=5)  # the webhook is gone: polling starts
+	assert tg.methods()[-1] == "getUpdates"
+
+
+async def test_polling_removes_the_webhook_when_asked_to(tg):
+	bot = TelegramBot(TOKEN, api=tg.api(), replace_webhook=True)
+	tg.ok("getWebhookInfo", {"url": "https://old.example.com/tg"})
+	tg.ok("getUpdates", [])
+	await bot.get_events(timeout=5)
+	assert tg.methods() == ["getWebhookInfo", "deleteWebhook", "getUpdates"]
 
 
 # ---------------------------------------------------------------- TelegramBot: outgoing

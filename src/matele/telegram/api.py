@@ -41,7 +41,7 @@ RETRY_STATUSES = (502, 503, 504)
 RETRY_DELAYS = (1.0, 2.0, 4.0)
 FLOOD_RETRIES = 2
 RETRY_AFTER_CAP = 60.0
-_PROBES = {"getUpdates", "getMe", "deleteWebhook"}
+_PROBES = {"getUpdates", "getMe", "deleteWebhook", "getWebhookInfo"}
 
 _sleep = asyncio.sleep  # patched in tests
 
