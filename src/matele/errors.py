@@ -29,6 +29,11 @@ class BotForbiddenError(BotApiError):
 	"""HTTP 403: the user blocked the bot or never started it."""
 
 
+class InvalidTokenError(BotApiError):
+	"""The messenger refused the bot token when the bot started (a typo,
+	a revoked token, or another messenger's token): retrying can't help."""
+
+
 class BotUnavailableError(BotApiError):
 	"""The API can't be reached right now (network error, or the guard is
 	still cooling down after one)."""

@@ -28,7 +28,8 @@ its 200 and sends the update again after the restart, so the event is
 not lost; handlers must cope with a repeat. A messenger that gives up
 waiting on a slow handler and repeats the request while it still runs
 gets its answer when that same handling finishes: the event is not
-handled twice.
+handled twice. If the handling is cut short (a stop that doesn't wait
+for it), the answer is 503, so the messenger sends the update again.
 
 Requirements from the messengers: a public https URL with a valid
 certificate; MAX accepts only port 443, Telegram 443, 80, 88 or 8443.
@@ -113,8 +114,9 @@ class Webhook:
 		self.close_bots = close_bots
 		self.max_pending = max(max_pending, 1)
 		self.at_least_once = at_least_once
-		# at_least_once: request (path + body) -> its handling, while it runs
-		self._in_flight: dict[bytes, asyncio.Future[None]] = {}
+		# at_least_once: request (path + body) -> its handling (resolving to
+		# the status to answer), while it runs
+		self._in_flight: dict[bytes, asyncio.Future[int]] = {}
 		self._overloaded = False
 		self.routes: dict[str, WebhookTransport] = {}
 		self._locks = KeyedLocks()
@@ -166,8 +168,7 @@ class Webhook:
 		request_key = hashlib.sha256(path.encode() + b"\0" + body).digest() if self.at_least_once else b""
 		repeated = self._in_flight.get(request_key)
 		if repeated is not None:  # the messenger's retry of a request still being handled
-			await asyncio.shield(repeated)
-			return 200
+			return await asyncio.shield(repeated)
 		if len(self._running) >= self.max_pending:
 			if not self._overloaded:  # once per overload, not per request
 				self._overloaded = True
@@ -198,7 +199,7 @@ class Webhook:
 			self._in_flight[request_key] = handled
 			handled.add_done_callback(lambda _: self._in_flight.pop(request_key, None))
 			# Shielded: the handling goes on even if this request is dropped.
-			await asyncio.shield(handled)
+			return await asyncio.shield(handled)
 		return 200
 
 	async def _feed(self, event: IncomingEvent) -> None:
@@ -258,8 +259,11 @@ class Webhook:
 		uvicorn.run(self, host=host, port=port, **uvicorn_options)
 
 
-async def _all_done(tasks: list[asyncio.Task[None]]) -> None:
+async def _all_done(tasks: list[asyncio.Task[None]]) -> int:
+	"""Waits for the request's events; 503 if any was cancelled before it
+	was handled (the messenger then sends the update again), else 200."""
 	await asyncio.wait(tasks)
+	return 503 if any(task.cancelled() for task in tasks) else 200
 
 
 async def _respond(send: Send, status: int) -> None:

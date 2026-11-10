@@ -341,14 +341,18 @@ class Dispatcher(Router):
 
 		`at_least_once=True`: an event whose handling was cut short by a
 		crash comes again after a restart (handlers must cope with
-		repeats); see matele.dispatch.polling."""
+		repeats); see matele.dispatch.polling.
+
+		Raises InvalidTokenError if a messenger refuses its token at
+		startup; polling of the other messengers is stopped then too (their
+		running handlers get `shutdown_timeout` seconds, as on a stop)."""
 		from matele.dispatch.polling import poll
 
 		if not clients:
 			raise ValueError("start_polling() needs at least one bot client")
 		self.freeze()
-		await asyncio.gather(
-			*(
+		tasks = [
+			asyncio.create_task(
 				poll(
 					self,
 					client,
@@ -357,9 +361,17 @@ class Dispatcher(Router):
 					concurrency=concurrency,
 					at_least_once=at_least_once,
 				)
-				for client in clients
 			)
-		)
+			for client in clients
+		]
+		try:
+			done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+			for task in done:
+				task.result()  # a poller only ever ends by raising
+		finally:  # also when cancelled: every poller drains its handlers
+			for task in tasks:
+				task.cancel()
+			await asyncio.gather(*tasks, return_exceptions=True)
 
 	def run_polling(
 		self,

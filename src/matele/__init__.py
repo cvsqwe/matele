@@ -18,6 +18,7 @@ from matele.errors import (
 	BotForbiddenError,
 	BotUnavailableError,
 	ConnectionGuard,
+	InvalidTokenError,
 	is_unreachable,
 	platform_title,
 )
@@ -74,6 +75,7 @@ __all__ = [
 	"Filter",
 	"HasAttachment",
 	"IncomingEvent",
+	"InvalidTokenError",
 	"Keyboard",
 	"MemoryStorage",
 	"Message",

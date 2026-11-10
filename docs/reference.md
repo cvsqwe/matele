@@ -211,6 +211,7 @@ hub = Hub(*bots, rate=25.0, on_unreachable=None)
 | `BotApiError` | мессенджер отказал. Поля `status_code`, `code`, `message`, `platform` |
 | `BotForbiddenError` | человеку нельзя написать: заблокировал бота или не запускал его |
 | `BotUnavailableError` | мессенджер недоступен |
+| `InvalidTokenError` | мессенджер не принял токен при запуске, polling остановлен |
 | `is_unreachable(exc)` | значит ли ошибка, что человеку сейчас писать бесполезно |
 | `CallbackError` | строку данных кнопки не удалось разобрать |
 | `InitDataError` | данные мини-приложения не прошли проверку, из `matele.webapp` |

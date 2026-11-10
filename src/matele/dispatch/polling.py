@@ -1,6 +1,8 @@
 """Long polling: one loop per messenger, independent of each other. A
-messenger whose API is down (or whose token is wrong) keeps retrying with
-backoff while the other carries on.
+messenger whose API is down keeps retrying with backoff while the other
+carries on. A token the messenger refuses at startup (401, or 404 for a
+token that isn't even well-formed) is a mistake in the configuration, not
+an outage: polling stops at once with InvalidTokenError.
 
 Events run as tasks, so one slow handler doesn't stall polling, while a
 per-person lock keeps each person's own events in order.
@@ -27,7 +29,8 @@ from collections.abc import AsyncIterator, Hashable
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
-from matele.types import BotClient, IncomingEvent
+from matele.errors import BotApiError, BotUnavailableError, InvalidTokenError
+from matele.types import BotClient, IncomingEvent, User
 
 if TYPE_CHECKING:
 	from matele.dispatch.dispatcher import Dispatcher
@@ -77,7 +80,9 @@ async def poll(
 	concurrency: int = CONCURRENCY,
 	at_least_once: bool = False,
 ) -> None:
-	"""Long-polls one messenger until cancelled; never raises otherwise.
+	"""Long-polls one messenger until cancelled. Raises only InvalidTokenError,
+	when the messenger refuses the token at startup; other failures are
+	retried.
 	On cancel, events still being handled get `shutdown_timeout` seconds
 	to finish; the rest are cancelled (and so is everything on a second
 	cancel).
@@ -107,14 +112,14 @@ async def poll(
 		while True:
 			try:
 				if not connected:
-					me = await client.get_me()
+					me = await _get_me(client)
 					log.info("%s: polling as @%s (id %s)", client.title, me.username, me.id)
 					connected = True
 					await dp.publish_commands(client)
 				events = await client.get_events(timeout=timeout)
-			except asyncio.CancelledError:
+			except (asyncio.CancelledError, InvalidTokenError):
 				raise
-			except Exception as exc:  # network, auth, API errors alike: retry
+			except Exception as exc:  # network and API errors alike: retry
 				log.warning("%s: polling failed (%s), retrying in %.0fs", client.title, exc, backoff)
 				await _sleep(backoff)
 				backoff = min(backoff * 2, max_backoff)
@@ -134,6 +139,27 @@ async def poll(
 			await asyncio.sleep(0)
 	finally:
 		await drain(running, shutdown_timeout)
+
+
+# What the messengers answer getMe with when the token is wrong: 401 for a
+# well-formed token they don't know (both), 404 for a malformed one
+# (Telegram puts the token into the URL, so a broken one names no bot).
+_REFUSED_TOKEN = (401, 404)
+
+
+async def _get_me(client: BotClient) -> User:
+	"""client.get_me(), with a refused token turned into InvalidTokenError."""
+	try:
+		return await client.get_me()
+	except BotApiError as exc:
+		if isinstance(exc, BotUnavailableError) or exc.status_code not in _REFUSED_TOKEN:
+			raise
+		raise InvalidTokenError(
+			exc.status_code,
+			exc.code,
+			f"{client.title} refused the bot token ({exc.message}): check it, polling stops",
+			platform=exc.platform or client.platform,
+		) from exc
 
 
 async def drain(running: set[asyncio.Task[None]], timeout: float) -> None:

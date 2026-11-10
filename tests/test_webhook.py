@@ -266,3 +266,25 @@ async def test_at_least_once_answers_only_when_the_event_is_handled():
 	assert await first == 200 and await retry == 200
 	assert handled == ["pay"]  # once
 	assert not webhook._in_flight
+
+
+async def test_at_least_once_does_not_answer_200_for_handling_cut_short():
+	dp = Dispatcher(registry=CallbackRegistry())
+
+	@dp.message()
+	async def stuck(ctx: Context):
+		await asyncio.sleep(100)
+
+	webhook = Webhook(dp, secret=SECRET, at_least_once=True, close_bots=False)
+	webhook.add(TelegramBot(TOKEN, api=FakeTelegram().api()), "/tg")
+	headers = {"X-Telegram-Bot-Api-Secret-Token": SECRET}
+	body = json.dumps({"update_id": 6, "message": tg_message("pay")}).encode()
+
+	first = asyncio.create_task(webhook.handle("/tg", headers, body))
+	for _ in range(20):
+		await asyncio.sleep(0)
+	retry = asyncio.create_task(webhook.handle("/tg", headers, body))
+	for _ in range(20):
+		await asyncio.sleep(0)
+	await webhook.shutdown(timeout=0.01)  # a stop that doesn't wait for the handler
+	assert await first == 503 and await retry == 503  # so the messenger sends the update again

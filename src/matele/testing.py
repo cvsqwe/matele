@@ -261,7 +261,11 @@ class FakeBot:
 		return content, filename or stored_name
 
 	def message_sequence(self, message_id: str) -> int | None:
-		"""FakeBot numbers all messages in one sequence, like Telegram does per chat."""
+		"""Like the real transports: as Telegram, FakeBot numbers messages
+		(all in one sequence); as MAX, whose ids are opaque, it doesn't, so
+		menus behave in tests the way people will see them."""
+		if self.platform == MAX:
+			return None
 		return int(message_id) if message_id.isdigit() else None
 
 	# ------------------------------------------------------------ internals
