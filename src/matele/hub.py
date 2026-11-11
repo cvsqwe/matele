@@ -96,7 +96,9 @@ class Delivery:
 @dataclass
 class BroadcastReport:
 	# One per person and messenger. Without the sent messages (`message` is
-	# None), so a report on a million people stays small.
+	# None) and without the errors' tracebacks (which hold the stack frames
+	# and the HTTP responses in them), so a report on a million people
+	# stays small.
 	deliveries: list[Delivery] = field(default_factory=list)
 	people: int = 0
 	reached: int = 0  # people who got the message on at least one messenger
@@ -216,6 +218,18 @@ class Hub:
 						await on_sent(accounts, deliveries)
 					except Exception:
 						logger.exception("on_sent failed")
+				for delivery in deliveries:  # after on_sent, which may still log them
+					_drop_tracebacks(delivery.error)
 
 		await asyncio.gather(*(worker() for _ in range(max(concurrency, 1))))
 		return report
+
+
+def _drop_tracebacks(exc: BaseException | None) -> None:
+	"""Lets the stack frames of a failure (and of the failures that led to
+	it) be freed, keeping the exception itself."""
+	seen: set[int] = set()
+	while exc is not None and id(exc) not in seen:
+		seen.add(id(exc))
+		exc.__traceback__ = None
+		exc = exc.__cause__ or exc.__context__

@@ -149,3 +149,24 @@ async def test_on_sent_lets_a_broadcast_go_on_after_a_restart():
 	second = FakeBot(platform=MAX)  # after a restart: only those not marked yet
 	report = await Hub(second).broadcast((p for p in people if p[MAX] not in done), "Мы открылись!")
 	assert report.people == 1 and [s.user_id for s in second.sent] == [2]
+
+
+async def test_a_broadcast_report_drops_the_tracebacks_of_failures():
+	class Broken(FakeBot):
+		async def send_message(self, text, *, chat_id=None, user_id=None, keyboard=None, reply_to=None):
+			try:
+				raise OSError("connection reset")
+			except OSError:  # chained, as a transport's error usually is
+				raise BotApiError(500, "", "boom", platform=MAX)  # noqa: B904
+
+	seen_in_hook = []
+
+	async def mark(accounts, deliveries) -> None:
+		seen_in_hook.append(deliveries[0].error.__traceback__ is not None)
+
+	report = await Hub(Broken(platform=MAX)).broadcast([{MAX: 1}], "hi", on_sent=mark)
+	error = report.deliveries[0].error
+	assert isinstance(error, BotApiError) and str(error).endswith("boom")
+	assert error.__traceback__ is None and error.__context__ is not None
+	assert error.__context__.__traceback__ is None
+	assert seen_in_hook == [True]  # on_sent still gets the whole failure to log
