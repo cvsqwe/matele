@@ -24,6 +24,7 @@ Private dialogs and group chats are routed; channels are not.
 from __future__ import annotations
 
 import html
+import ipaddress
 import logging
 from collections import OrderedDict
 from typing import Any
@@ -502,16 +503,22 @@ def _button(button: Button, bot: User | None = None, secret: str | None = None) 
 
 
 def is_linkable(url: str) -> bool:
-	"""Would MAX accept this as a link button? Only public http(s) hosts."""
-	parts = urlsplit(url)
-	host = (parts.hostname or "").lower()
-	return (
-		parts.scheme in ("http", "https")
-		and "." in host
-		and host != "0.0.0.0"
-		and not host.startswith("127.")
-		and not host.endswith(".localhost")
-	)
+	"""Would MAX accept this as a link button? Only http(s) links to a
+	domain name: not localhost, and not an IP address (a LAN one or not)."""
+	try:
+		parts = urlsplit(url)
+		host = (parts.hostname or "").lower()
+	except ValueError:  # e.g. a broken [IPv6] address
+		return False
+	return parts.scheme in ("http", "https") and "." in host and not host.endswith(".localhost") and not _is_ip(host)
+
+
+def _is_ip(host: str) -> bool:
+	try:
+		ipaddress.ip_address(host)
+	except ValueError:
+		return False
+	return True
 
 
 def move_unlinkable_buttons(text: str | None, keyboard: Keyboard | None) -> tuple[str | None, Keyboard | None]:

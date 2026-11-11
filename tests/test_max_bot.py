@@ -6,7 +6,7 @@ from matele import MAX, Button, CallbackData, CallbackQuery, ChatStatus, Context
 from matele.callbacks import CallbackRegistry, callback
 from matele.max import MaxBot
 from matele.max import models as m
-from matele.max.bot import move_unlinkable_buttons
+from matele.max.bot import is_linkable, move_unlinkable_buttons
 from tests.max_fake import FakeMaxServer, message, user
 
 reg = CallbackRegistry()
@@ -344,3 +344,25 @@ async def test_ctx_edit_of_a_text_menu_sends_only_the_keyboard(server, bot):
 	edit = next(c for c in server.calls if c.method == "PUT")
 	assert edit.json["attachments"] == []  # the old keyboard goes, nothing else to keep
 	assert not any(c.method == "GET" for c in server.calls)
+
+
+@pytest.mark.parametrize(
+	("url", "linkable"),
+	[
+		("https://example.ru/a", True),
+		("http://shop.example.com:8080/x", True),
+		("http://localhost:3000", False),
+		("http://app.localhost/", False),
+		("http://127.0.0.1/a", False),
+		("http://0.0.0.0:8000", False),
+		("http://192.168.1.10/admin", False),
+		("http://10.0.0.5", False),
+		("http://8.8.8.8/", False),
+		("http://[::1]:8000/", False),
+		("http://[broken/", False),
+		("tg://resolve?domain=x", False),
+		("example.ru", False),
+	],
+)
+def test_which_links_max_takes(url, linkable):
+	assert is_linkable(url) is linkable
