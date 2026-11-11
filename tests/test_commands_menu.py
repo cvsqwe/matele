@@ -10,7 +10,7 @@ from matele.max import MaxBot
 from matele.telegram import TelegramBot
 from matele.testing import FakeBot
 from tests.max_fake import FakeMaxServer
-from tests.test_telegram import TOKEN, FakeTelegram
+from tests.telegram_fake import TOKEN, FakeTelegram
 
 
 @pytest.fixture
@@ -98,3 +98,39 @@ async def test_wire_formats():
 	await TelegramBot(TOKEN, api=tg.api()).set_commands([("start", "Начать")])
 	assert tg.calls[0][0] == "setMyCommands"
 	assert tg.calls[0][1] == {"commands": [{"command": "start", "description": "Начать"}]}
+
+
+async def test_the_menu_is_published_once_the_messenger_is_reached(monkeypatch):
+	dp = Dispatcher(registry=CallbackRegistry())
+
+	@dp.command("start", description="Начать")
+	async def start(ctx: Context): ...
+
+	class Offline(FakeBot):
+		"""No network until the first get_me() fails: then it comes back."""
+
+		online = False
+
+		async def get_me(self):
+			if not self.online:
+				self.online = True
+				raise ConnectionError("no network at start")
+			return await super().get_me()
+
+		async def set_commands(self, commands):
+			if not self.online:
+				raise ConnectionError("no network at start")
+			await super().set_commands(commands)
+
+	async def no_sleep(delay: float) -> None:
+		await asyncio.sleep(0)
+
+	monkeypatch.setattr("matele.dispatch.polling._sleep", no_sleep)
+	bot = Offline()
+	task = asyncio.create_task(dp.start_polling(bot, timeout=1))
+	for _ in range(20):
+		await asyncio.sleep(0)
+	task.cancel()
+	with pytest.raises(asyncio.CancelledError):
+		await task
+	assert bot.commands == [("start", "Начать")]

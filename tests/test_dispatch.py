@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Literal
 
 import pytest
@@ -27,6 +28,7 @@ from matele import (
 	callback,
 )
 from matele.dispatch import parse_command
+from matele.fsm import StateRecord
 from matele.testing import FakeBot
 
 reg = CallbackRegistry()
@@ -603,3 +605,91 @@ async def test_at_least_once_asks_for_the_next_batch_only_when_this_one_is_handl
 	assert bot.log == ["ask", "start a", "done a", "ask"]
 	task.cancel()
 	await asyncio.gather(task, return_exceptions=True)
+
+
+class BrokenStorage(MemoryStorage):
+	def __init__(self) -> None:
+		super().__init__()
+		self.writes = 0
+
+	async def get(self, key: StorageKey) -> StateRecord | None:
+		raise ConnectionError("redis is down")
+
+	async def set(self, key: StorageKey, record: StateRecord) -> None:
+		self.writes += 1
+
+
+async def test_a_storage_failure_reaches_on_error_and_the_button_is_answered():
+	storage = BrokenStorage()
+	dp = Dispatcher(storage=storage, registry=CallbackRegistry())
+	errors: list[Exception] = []
+	called = []
+
+	@dp.raw_callback()
+	async def pressed(ctx: Context):
+		called.append(1)
+
+	@dp.on_error
+	async def on_error(ctx: Context, exc: Exception):
+		errors.append(exc)
+
+	bot = FakeBot()
+	assert await dp.feed(bot.press("x")) is False  # no exception escapes
+	assert called == []  # the handler doesn't run without the person's state
+	assert isinstance(errors[0], ConnectionError)
+	assert len(bot.answers) == 1  # the button stops spinning
+	assert storage.writes == 0  # nothing saved over the real state
+
+
+async def test_typing_errors_never_break_the_handler():
+	dp = Dispatcher(registry=CallbackRegistry())
+
+	class NoTyping(FakeBot):
+		calls = 0
+
+		async def send_typing(self, chat_id: int) -> None:
+			self.calls += 1
+			raise RuntimeError("not supported")
+
+	@dp.message()
+	async def slow(ctx: Context):
+		async with ctx.typing(every=0.01):
+			await asyncio.sleep(0.05)
+		await ctx.reply("done")
+
+	bot = NoTyping()
+	await dp.feed(bot.message("x"))
+	assert bot.texts == ["done"]
+	assert bot.calls >= 2  # the "typing…" loop survives an error and keeps trying
+
+
+async def test_feed_survives_a_failing_button_answer_and_still_saves_the_state():
+	class BrokenAnswers(FakeBot):
+		async def answer_callback(self, callback_id, *, text=None, alert=False):
+			raise ValueError("not JSON")  # not a BotApiError
+
+	dp = Dispatcher(registry=CallbackRegistry())
+	bot = BrokenAnswers()
+
+	@dp.raw_callback()
+	async def press(ctx):
+		ctx.state.update(step=1)
+
+	event = bot.press("x")
+	assert await dp.feed(event) is True  # nothing escapes
+	record = await dp.storage.get(dp.storage_key(event))
+	assert record is not None and record.data == {"step": 1}
+
+
+async def test_logs_name_the_event_but_not_what_the_person_wrote(caplog):
+	dp = Dispatcher(registry=CallbackRegistry())
+	bot = FakeBot()
+
+	@dp.message()
+	async def boom(ctx):
+		raise RuntimeError("handler bug")
+
+	with caplog.at_level(logging.DEBUG):
+		await dp.feed(bot.message("my card is 4111 1111", user_id=7))
+	assert "Message from max user 7" in caplog.text
+	assert "4111" not in caplog.text

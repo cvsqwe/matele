@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import io
-import json
 import logging
-from typing import Any
+from typing import IO, Any, cast
 
 import httpx
 import pytest
@@ -20,51 +19,7 @@ from matele import (
 	Message,
 )
 from matele.telegram import CallbackAliases, InputFile, TelegramApi, TelegramBot
-
-TOKEN = "123:SECRET"
-
-
-class FakeTelegram:
-	"""Scripted Bot API: method -> queued answers (dict = result, or full JSON / exception)."""
-
-	def __init__(self) -> None:
-		self.calls: list[tuple[str, Any, httpx.Request]] = []
-		self.answers: dict[str, list[Any]] = {}
-
-	def ok(self, method: str, *results: Any) -> None:
-		self.answers.setdefault(method, []).extend({"ok": True, "result": r} for r in results)
-
-	def fail(self, method: str, code: int, description: str, **extra: Any) -> None:
-		self.answers.setdefault(method, []).append(
-			{"ok": False, "error_code": code, "description": description, **extra}
-		)
-
-	def raise_(self, method: str, exc: Exception) -> None:
-		self.answers.setdefault(method, []).append(exc)
-
-	def handle(self, request: httpx.Request) -> httpx.Response:
-		path = request.url.path
-		if "/file/" in path:
-			return httpx.Response(200, content=b"FILE:" + path.rsplit("/", 1)[-1].encode())
-		method = path.rsplit("/", 1)[-1]
-		content_type = request.headers.get("content-type", "")
-		body: Any = json.loads(request.content) if content_type.startswith("application/json") else request.read()
-		self.calls.append((method, body, request))
-		queue = self.answers.get(method) or []
-		if not queue:
-			return httpx.Response(200, json={"ok": True, "result": True})
-		answer = queue.pop(0)
-		if isinstance(answer, Exception):
-			raise answer
-		return httpx.Response(200 if answer["ok"] else answer["error_code"], json=answer)
-
-	def api(self) -> TelegramApi:
-		return TelegramApi(
-			TOKEN, api_url="https://tg.test", http=httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
-		)
-
-	def methods(self) -> list[str]:
-		return [c[0] for c in self.calls]
+from tests.telegram_fake import TOKEN, FakeTelegram, tg_message
 
 
 @pytest.fixture
@@ -86,16 +41,6 @@ def sleeps(monkeypatch) -> list[float]:
 
 	monkeypatch.setattr("matele.telegram.api._sleep", fake_sleep)
 	return recorded
-
-
-def tg_message(text: str | None = "hi", *, chat_type="private", message_id=10, chat_id=7, **extra) -> dict[str, Any]:
-	return {
-		"message_id": message_id,
-		"chat": {"id": chat_id, "type": chat_type},
-		"from": {"id": chat_id, "first_name": "Ann", "last_name": "Lee", "username": "ann"},
-		"text": text,
-		**extra,
-	}
 
 
 # ---------------------------------------------------------------- TelegramApi
@@ -377,3 +322,141 @@ async def test_with_a_secret_only_buttons_the_bot_made_are_accepted(tg):
 	assert isinstance(real, CallbackQuery) and real.data == "order:view:42"
 	(forged,) = await bot.parse_update(press("order:view:43"))
 	assert isinstance(forged, CallbackQuery) and forged.data == ""  # like an outdated button
+
+
+async def test_the_telegram_token_never_reaches_the_logs(caplog):
+	caplog.set_level(logging.INFO, logger="httpx")
+	tg = FakeTelegram()
+	tg.ok("getMe", {"id": 1, "first_name": "Bot", "username": "b"})
+	await TelegramBot(TOKEN, api=tg.api()).get_me()
+	assert "HTTP Request" in caplog.text  # httpx did log the request
+	assert TOKEN not in caplog.text and "SECRET" not in caplog.text
+	assert "/bot***/getMe" in caplog.text
+
+
+async def test_telegram_service_messages_are_not_routed():
+	bot = TelegramBot(TOKEN, api=FakeTelegram().api())
+	for service in (
+		{"pinned_message": {"message_id": 1}},
+		{"new_chat_title": "New title"},
+		{"migrate_to_chat_id": -1001},
+	):
+		raw = tg_message(None, chat_type="group", chat_id=-5)
+		del raw["text"]
+		assert await bot.parse_update({"update_id": 1, "message": {**raw, **service}}) == []
+	sticker = tg_message(None)
+	del sticker["text"]
+	(event,) = await bot.parse_update({"update_id": 2, "message": {**sticker, "sticker": {"file_id": "s"}}})
+	assert isinstance(event, Message) and event.text is None  # real content without text is still routed
+
+
+async def test_a_consumed_stream_is_not_resent_empty():
+	import io
+
+	class OneShot(io.RawIOBase):
+		def __init__(self) -> None:
+			self.data = b"payload"
+
+		def readable(self) -> bool:
+			return True
+
+		def seekable(self) -> bool:
+			return False
+
+		def readinto(self, buffer) -> int:
+			n = min(len(buffer), len(self.data))
+			buffer[:n], self.data = self.data[:n], self.data[n:]
+			return n
+
+	tg = FakeTelegram()
+	tg.fail("sendDocument", 429, "Too Many Requests", parameters={"retry_after": 1})
+	tg.ok("sendDocument", tg_message(None))
+	from matele.telegram import InputFile
+
+	with pytest.raises(Exception, match="Too Many Requests"):
+		await tg.api().call("sendDocument", chat_id=1, document=InputFile(cast(IO[bytes], OneShot()), "x.bin"))
+	assert len(tg.calls) == 1  # not retried with an empty body
+
+
+async def test_a_broken_update_is_logged_without_its_contents(caplog):
+	tg = FakeTelegram()
+	bot = TelegramBot(TOKEN, api=tg.api())
+	tg.ok(
+		"getUpdates", [{"update_id": 9, "message": {"text": "secret words", "chat": {"type": "private"}, "from": {}}}]
+	)
+	tg.ok("getUpdates", [{"update_id": 10, "callback_query": {"data": "secret words"}}])
+	with caplog.at_level(logging.DEBUG):
+		await bot.get_events(timeout=1)
+		await bot.get_events(timeout=1)
+	assert "update 10 (callback_query)" in caplog.text
+	assert "secret words" not in caplog.text
+
+
+@pytest.mark.parametrize("status", [502, 504])
+async def test_telegram_does_not_repeat_a_send_that_may_have_gone_through(status):
+	tg = FakeTelegram()
+	tg.fail("sendMessage", status, "Bad Gateway")
+	with pytest.raises(BotApiError) as raised:
+		await TelegramBot(TOKEN, api=tg.api()).send_message("paid", user_id=1)
+	assert raised.value.status_code == status and tg.methods() == ["sendMessage"]
+
+
+async def test_telegram_repeats_a_send_that_was_turned_away():
+	tg = FakeTelegram()
+	tg.fail("sendMessage", 503, "Service Unavailable")
+	tg.ok("sendMessage", tg_message("paid"))
+	await TelegramBot(TOKEN, api=tg.api()).send_message("paid", user_id=1)
+	assert tg.methods() == ["sendMessage", "sendMessage"]
+
+
+async def test_telegram_still_repeats_calls_that_send_nothing():
+	tg = FakeTelegram()
+	tg.fail("editMessageText", 502, "Bad Gateway")
+	await TelegramBot(TOKEN, api=tg.api()).edit_message("1:2", "new")
+	assert tg.methods() == ["editMessageText", "editMessageText"]
+
+
+@pytest.mark.parametrize(
+	("exc", "maybe_sent"),
+	[
+		(httpx.ReadTimeout("slow"), True),
+		(httpx.RemoteProtocolError("dropped"), True),
+		(httpx.ConnectError("no"), False),
+	],
+)
+async def test_telegram_network_errors_tell_whether_the_request_may_have_arrived(exc, maybe_sent):
+	tg = FakeTelegram()
+	tg.raise_("sendMessage", exc)
+	with pytest.raises(BotUnavailableError) as raised:
+		await TelegramBot(TOKEN, api=tg.api()).send_message("paid", user_id=1)
+	assert raised.value.maybe_sent is maybe_sent
+
+
+class OneWay(io.RawIOBase):
+	"""A stream that can be read once, like a socket or a pipe."""
+
+	def __init__(self, data: bytes) -> None:
+		self._data = io.BytesIO(data)
+
+	def readable(self) -> bool:
+		return True
+
+	def seekable(self) -> bool:
+		return False
+
+	def readinto(self, buffer) -> int:  # type: ignore[override]
+		chunk = self._data.read(len(buffer))
+		buffer[: len(chunk)] = chunk
+		return len(chunk)
+
+
+async def test_telegram_resends_a_one_way_stream_whole_when_the_caption_is_not_html():
+	tg = FakeTelegram()
+	tg.fail("sendDocument", 400, "Bad Request: can't parse entities: unclosed tag")
+	tg.ok("sendDocument", tg_message(None))
+	bot = TelegramBot(TOKEN, api=tg.api())
+	content = b"report " * 50_000  # over the in-memory part: goes through the disk
+	await bot.send_file(io.BufferedReader(OneWay(content)), filename="r.txt", user_id=1, caption="<b>broken")
+	assert tg.methods() == ["sendDocument", "sendDocument"]
+	for _, body, _ in tg.calls:  # both uploads carry the whole file
+		assert body.count(b"report ") == 50_000

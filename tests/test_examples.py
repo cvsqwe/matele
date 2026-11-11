@@ -8,8 +8,8 @@ import httpx
 import pytest
 
 from matele.telegram import TelegramBot
-from tests.test_telegram import TOKEN, FakeTelegram, tg_message
-from tests.test_webapp import init_data
+from tests.init_data import init_data
+from tests.telegram_fake import TOKEN, FakeTelegram, tg_message
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 

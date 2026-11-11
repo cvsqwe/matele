@@ -9,7 +9,7 @@ from matele.max import models as m
 from matele.telegram import TelegramBot
 from matele.testing import FakeBot
 from tests.max_fake import FakeMaxServer, message, user
-from tests.test_telegram import TOKEN, FakeTelegram, tg_message
+from tests.telegram_fake import TOKEN, FakeTelegram, tg_message
 
 GROUP_ID = -100
 ASK = State("ask")

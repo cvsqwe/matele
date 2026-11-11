@@ -123,7 +123,7 @@ def test_message_order_per_messenger():
 	from matele.max import MaxBot
 	from matele.telegram import TelegramBot
 	from tests.max_fake import FakeMaxServer
-	from tests.test_telegram import TOKEN, FakeTelegram
+	from tests.telegram_fake import TOKEN, FakeTelegram
 
 	tg = TelegramBot(TOKEN, api=FakeTelegram().api())
 	assert tg.message_sequence("7:10") == 10 and tg.message_sequence("garbage") is None

@@ -11,7 +11,7 @@ from matele.max import MaxBot
 from matele.telegram import TelegramBot
 from matele.testing import FakeBot
 from tests.max_fake import FakeMaxServer, message
-from tests.test_telegram import TOKEN, FakeTelegram, tg_message
+from tests.telegram_fake import TOKEN, FakeTelegram, tg_message
 
 
 @pytest.fixture
@@ -130,3 +130,17 @@ async def test_telegram_file_kinds(kind, method):
 	tg.ok(method, tg_message(None))
 	await TelegramBot(TOKEN, api=tg.api()).send_file(b"data", kind=kind, filename="x.bin", user_id=7)
 	assert tg.calls[0][0] == method
+
+
+async def test_files_from_bytes_get_a_name_that_tells_the_type():
+	tg = FakeTelegram()
+	tg.ok("sendPhoto", tg_message(None))
+	await TelegramBot(TOKEN, api=tg.api()).send_file(b"JPEG", kind="image", user_id=7)
+	assert b'filename="image.jpg"' in tg.calls[0][1] and b"image/jpeg" in tg.calls[0][1]
+
+	server = FakeMaxServer()
+	server.on("POST", "/uploads", {"url": "https://up/1"})
+	server.on("POST", "https://up/1", {"token": "vt"})
+	server.on("POST", "/messages", {"message": message(None)})
+	await MaxBot("t", api=server.api()).send_file(b"MP4", kind="video", user_id=7)
+	assert b'filename="video.mp4"' in server.files[0].content

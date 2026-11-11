@@ -12,7 +12,7 @@ from matele.max import MaxBot
 from matele.telegram import TelegramBot
 from matele.webhook import Webhook
 from tests.max_fake import FakeMaxServer, message, user
-from tests.test_telegram import TOKEN, FakeTelegram, tg_message
+from tests.telegram_fake import TOKEN, FakeTelegram, tg_message
 
 SECRET = "s3cret-value_1"
 
@@ -288,3 +288,34 @@ async def test_at_least_once_does_not_answer_200_for_handling_cut_short():
 		await asyncio.sleep(0)
 	await webhook.shutdown(timeout=0.01)  # a stop that doesn't wait for the handler
 	assert await first == 503 and await retry == 503  # so the messenger sends the update again
+
+
+async def test_webhook_mounted_under_a_prefix():
+	dp = Dispatcher(registry=CallbackRegistry())
+	seen = []
+
+	@dp.message()
+	async def h(ctx: Context):
+		seen.append(ctx.text)
+
+	webhook = Webhook(dp, secret="mount-secret")
+	webhook.add(MaxBot("t", api=FakeMaxServer().api()), "/max")
+	body = json.dumps({"update_type": "message_created", "timestamp": 1, "message": message("hi")}).encode()
+	sent: list[dict[str, Any]] = []
+
+	async def receive() -> dict[str, Any]:
+		return {"type": "http.request", "body": body, "more_body": False}
+
+	async def send(msg: dict[str, Any]) -> None:
+		sent.append(msg)
+
+	scope = {
+		"type": "http",
+		"method": "POST",
+		"path": "/hooks/max",
+		"root_path": "/hooks",
+		"headers": [(b"x-max-bot-api-secret", b"mount-secret")],
+	}
+	await webhook(scope, receive, send)
+	await asyncio.wait(set(webhook._running), timeout=2)
+	assert sent[0]["status"] == 200 and seen == ["hi"]

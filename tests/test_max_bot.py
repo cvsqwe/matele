@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+
 import pytest
 
 from matele import MAX, Button, CallbackData, CallbackQuery, ChatStatus, Context, Dispatcher, Keyboard, Message
 from matele.callbacks import CallbackRegistry, callback
+from matele.errors import BotApiError
 from matele.max import MaxBot
 from matele.max import models as m
 from matele.max.bot import is_linkable, move_unlinkable_buttons
@@ -219,7 +223,6 @@ async def test_end_to_end_with_the_dispatcher(server, bot):
 
 
 async def test_polling_a_real_max_transport(server, bot):
-	import asyncio
 
 	dp = Dispatcher(registry=reg)
 	done = asyncio.Event()
@@ -366,3 +369,82 @@ async def test_ctx_edit_of_a_text_menu_sends_only_the_keyboard(server, bot):
 )
 def test_which_links_max_takes(url, linkable):
 	assert is_linkable(url) is linkable
+
+
+async def test_max_limits_are_explained():
+	server = FakeMaxServer()
+	bot = MaxBot("t", api=server.api())
+	with pytest.raises(ValueError, match="1024"):
+		await bot.send_message("x", user_id=7, keyboard=Keyboard([[Button("Big", "x" * 1025)]]))
+	assert server.calls == []  # refused before calling MAX
+
+	server.on("PATCH", "/me/commands", {"commands": []})
+	await bot.set_commands([(f"c{i}", "d") for i in range(40)])
+	assert len(server.calls[0].json["commands"]) == 32
+
+	dp = Dispatcher(registry=CallbackRegistry())
+	with pytest.raises(ValueError, match="1-128"):
+		dp.command("x", description="d" * 129)
+
+
+async def test_max_polling_warns_about_a_subscribed_webhook(caplog):
+	server = FakeMaxServer()
+	server.on("GET", "/subscriptions", {"subscriptions": [{"url": "https://old.example.com/max", "time": 1}]})
+	server.always("GET", "/updates", {"updates": [], "marker": None})
+	bot = MaxBot("t", api=server.api())
+	await bot.get_events(timeout=1)
+	await bot.get_events(timeout=1)
+	assert "https://old.example.com/max" in caplog.text
+	assert [c.path for c in server.calls].count("/subscriptions") == 1  # checked once
+
+
+@pytest.mark.parametrize("status", [502, 504])
+async def test_max_does_not_repeat_a_send_that_may_have_gone_through(status):
+	server = FakeMaxServer()
+	server.on("POST", "/messages", {"code": "gateway", "message": "Bad Gateway"}, status=status)
+	with pytest.raises(BotApiError):
+		await MaxBot("t", api=server.api()).send_message("paid", user_id=1)
+	assert [c.path for c in server.calls] == ["/messages"]
+
+
+async def test_max_repeats_a_send_that_was_turned_away():
+	server = FakeMaxServer()
+	server.on("POST", "/messages", {"code": "busy", "message": "Service Unavailable"}, status=503)
+	server.on("POST", "/messages", {"message": message("paid")})
+	await MaxBot("t", api=server.api()).send_message("paid", user_id=1)
+	assert [c.path for c in server.calls] == ["/messages", "/messages"]
+
+
+async def test_max_answers_a_press_without_text_with_an_empty_answer():
+	server = FakeMaxServer()
+	server.on("POST", "/answers", {"success": True})
+	await MaxBot("t", api=server.api()).answer_callback("cb1")
+	assert server.calls[0].json == {}
+
+
+async def test_max_falls_back_to_an_empty_notification_if_an_empty_answer_is_refused():
+	server = FakeMaxServer()
+	server.on("POST", "/answers", {"code": "proto.payload", "message": "empty answer"}, status=400)
+	server.on("POST", "/answers", {"success": True})
+	await MaxBot("t", api=server.api()).answer_callback("cb1")
+	assert [c.json for c in server.calls] == [{}, {"notification": ""}]
+
+
+async def test_max_edit_without_text_keeps_the_text_and_makes_bad_links_inert(caplog):
+	server = FakeMaxServer()
+	server.on("GET", "/messages/mid.1", message("menu"))
+	server.on("PUT", "/messages", {"success": True})
+	keyboard = Keyboard([[Button("Local", url="http://localhost:3000"), Button("Site", url="https://example.com")]])
+	with caplog.at_level(logging.WARNING, logger="matele.max.bot"):
+		await MaxBot("t", api=server.api()).edit_message("mid.1", None, keyboard=keyboard)
+	body = server.calls[-1].json
+	assert "text" not in body  # the message keeps its text
+	buttons = body["attachments"][0]["payload"]["buttons"][0]
+	assert buttons[0] == {"type": "callback", "text": "Local", "payload": "noop"}
+	assert buttons[1]["type"] == "link" and buttons[1]["url"] == "https://example.com"
+	assert "localhost:3000" in caplog.text
+
+
+def test_moved_links_without_a_text_do_not_start_with_blank_lines():
+	text, _ = move_unlinkable_buttons(None, Keyboard([[Button("Local", url="http://localhost:3000")]]))
+	assert text == "Local: http://localhost:3000"

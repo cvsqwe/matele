@@ -170,3 +170,14 @@ async def test_a_broadcast_report_drops_the_tracebacks_of_failures():
 	assert error.__traceback__ is None and error.__context__ is not None
 	assert error.__context__.__traceback__ is None
 	assert seen_in_hook == [True]  # on_sent still gets the whole failure to log
+
+
+async def test_hub_does_not_resend_what_may_have_arrived():
+	class SlowAnswer(FlakyBot):
+		async def send_message(self, text, *, chat_id=None, user_id=None, keyboard=None, reply_to=None):
+			self.attempts = getattr(self, "attempts", 0) + 1
+			raise BotUnavailableError(0, "network", "ReadTimeout", platform=self.platform, maybe_sent=True)
+
+	bot = SlowAnswer(platform="max")
+	[delivery] = await Hub(bot).send({"max": 1}, "paid")
+	assert not delivery.ok and bot.attempts == 1

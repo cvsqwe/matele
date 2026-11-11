@@ -12,7 +12,7 @@ from matele.max import MaxBot
 from matele.telegram import TelegramBot
 from matele.testing import FakeBot
 from tests.max_fake import FakeMaxServer
-from tests.test_telegram import TOKEN, FakeTelegram
+from tests.telegram_fake import TOKEN, FakeTelegram
 
 
 @pytest.fixture(autouse=True)
