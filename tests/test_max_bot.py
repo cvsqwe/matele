@@ -269,3 +269,78 @@ async def test_with_a_secret_only_buttons_the_bot_made_are_accepted(server):
 	assert isinstance(real, CallbackQuery) and real.data == "order:view:42"
 	(forged,) = bot.parse_update(press("order:view:43"))
 	assert isinstance(forged, CallbackQuery) and forged.data == ""
+
+
+# ------------------------------------------------------------ edits keep the media
+PHOTO = {"type": "image", "payload": {"photo_id": 1, "token": "photo-token", "url": "https://i.max.test/1"}}
+FILE = {
+	"type": "file",
+	"payload": {"url": "https://f.max.test/1", "token": "file-token"},
+	"filename": "a.pdf",
+	"size": 3,
+}
+OLD_KEYBOARD = {
+	"type": "inline_keyboard",
+	"payload": {"buttons": [[{"type": "callback", "text": "x", "payload": "x"}]]},
+}
+
+
+def _press(mid: str, attachments: list) -> m.Update:
+	return m.Update.from_dict(
+		{
+			"update_type": "message_callback",
+			"timestamp": 1,
+			"callback": {"timestamp": 1, "callback_id": "cb1", "payload": "pick:3", "user": user(7)},
+			"message": message("caption", mid=mid, attachments=attachments),
+		}
+	)
+
+
+async def test_editing_a_pressed_photo_keeps_the_photo(server, bot):
+	server.always("PUT", "/messages", {"success": True})
+	bot.parse_update(_press("mid.p", [PHOTO, OLD_KEYBOARD]))
+	await bot.edit_message("mid.p", None)  # remove the buttons
+	await bot.edit_message("mid.p", "new caption", keyboard=Keyboard([[Button("Again", Pick(4).pack())]]))
+	first, second = (c.json for c in server.calls)
+	assert [c.method for c in server.calls] == ["PUT", "PUT"]  # known from the press: no lookup
+	assert first["attachments"] == [{"type": "image", "payload": {"token": "photo-token"}}]
+	assert second["attachments"][0] == {"type": "image", "payload": {"token": "photo-token"}}
+	assert second["attachments"][1]["type"] == "inline_keyboard"
+
+
+async def test_editing_an_unknown_message_looks_up_its_media_once(server, bot):
+	server.on("GET", "/messages/mid.f", message("report", mid="mid.f", attachments=[FILE, OLD_KEYBOARD]))
+	server.always("PUT", "/messages", {"success": True})
+	await bot.edit_message("mid.f", "report v2")
+	await bot.edit_message("mid.f", "report v3")
+	assert [(c.method, c.path) for c in server.calls] == [
+		("GET", "/messages/mid.f"),
+		("PUT", "/messages"),
+		("PUT", "/messages"),
+	]
+	for call in server.calls[1:]:
+		assert call.json["attachments"] == [{"type": "file", "payload": {"token": "file-token"}}]
+
+
+async def test_editing_a_sent_file_keeps_the_file(server, bot):
+	server.on("POST", "/messages", {"message": message("doc", mid="mid.s", attachments=[FILE, OLD_KEYBOARD])})
+	server.always("PUT", "/messages", {"success": True})
+	sent = await bot.send_file_by_token("file-token", user_id=7, caption="doc")
+	await bot.edit_message(sent.message_id, "doc, checked")
+	assert server.calls[-1].json["attachments"] == [{"type": "file", "payload": {"token": "file-token"}}]
+
+
+async def test_ctx_edit_of_a_text_menu_sends_only_the_keyboard(server, bot):
+	dp = Dispatcher(registry=reg)
+
+	@dp.callback(Pick)
+	async def pick(ctx: Context, payload: Pick):
+		await ctx.edit("done")
+
+	server.always("POST", "/answers", {"success": True})
+	server.always("PUT", "/messages", {"success": True})
+	for event in bot.parse_update(_press("mid.t", [OLD_KEYBOARD])):
+		await dp.feed(event)
+	edit = next(c for c in server.calls if c.method == "PUT")
+	assert edit.json["attachments"] == []  # the old keyboard goes, nothing else to keep
+	assert not any(c.method == "GET" for c in server.calls)

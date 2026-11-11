@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import html
 import logging
+from collections import OrderedDict
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -56,6 +57,7 @@ from matele.webapp import DEFAULT_MAX_AGE, WebAppData, verify_init_data
 logger = logging.getLogger(__name__)
 
 _CALLBACK_USERS_LIMIT = 1000
+_KNOWN_MEDIA_LIMIT = 1000  # messages whose attachments are remembered for edits
 _CHAT_TYPES = {"dialog": PRIVATE, "chat": GROUP}
 _DEFAULT_FILENAMES = {"image": "image.jpg", "video": "video.mp4", "audio": "audio", "file": "file"}
 
@@ -86,6 +88,9 @@ class MaxBot:
 		self._subscriptions_checked = False
 		# callback_id -> who pressed, so an alert can also go to them as a message
 		self._callback_users: dict[str, int] = {}
+		# message id -> its attachments other than the keyboard, which an edit
+		# has to send again (MAX drops what an edit doesn't list)
+		self._media: OrderedDict[str, list[m.AttachmentRequest]] = OrderedDict()
 
 	@property
 	def guard(self) -> ConnectionGuard:
@@ -166,6 +171,8 @@ class MaxBot:
 		if isinstance(update, m.MessageCallbackUpdate):
 			cb = update.callback
 			self._remember_callback(cb.callback_id, cb.user.user_id)
+			if update.message is not None:  # the message the button is on: likely edited next
+				self._remember_media(update.message)
 			return CallbackQuery(
 				id=cb.callback_id,
 				data=self._checked(cb.payload or "", cb.user.user_id),
@@ -243,6 +250,24 @@ class MaxBot:
 			self._callback_users.pop(next(iter(self._callback_users)))  # oldest first
 		self._callback_users[callback_id] = user_id
 
+	def _remember_media(self, msg: m.Message) -> None:
+		mid = msg.body.mid
+		if not mid:
+			return
+		self._media[mid] = media_requests(msg.body.attachments)
+		self._media.move_to_end(mid)
+		while len(self._media) > _KNOWN_MEDIA_LIMIT:
+			self._media.popitem(last=False)
+
+	async def _media_of(self, message_id: str) -> list[m.AttachmentRequest]:
+		"""The attachments (but the keyboard) an edit must keep; asks MAX for
+		a message this bot hasn't seen since it started."""
+		known = self._media.get(message_id)
+		if known is None:
+			self._remember_media(await self.api.get_message(message_id))
+			known = self._media.get(message_id, [])
+		return list(known)
+
 	# ------------------------------------------------------------ outgoing
 	async def send_message(
 		self,
@@ -264,6 +289,7 @@ class MaxBot:
 			attachments=attachments,
 			link=_reply_link(reply_to),
 		)
+		self._remember_media(sent)
 		return self._message(sent)
 
 	async def edit_message(self, message_id: str, text: str | None, *, keyboard: Keyboard | None = None) -> None:
@@ -271,14 +297,16 @@ class MaxBot:
 			new_text, keyboard = None, inert_unlinkable_buttons(keyboard)
 		else:
 			new_text, keyboard = move_unlinkable_buttons(text, keyboard)
-		# An empty list removes the old keyboard: an edit without one drops it.
-		attachments: list[m.AttachmentRequest] = (
-			[keyboard_attachment(keyboard, self.me, self._callback_secret)] if keyboard is not None else []
-		)
+		# MAX replaces all attachments with the ones listed: the media goes
+		# again, and the keyboard only if there is one (an edit without drops it).
+		attachments = await self._media_of(message_id)
+		if keyboard is not None:
+			attachments.append(keyboard_attachment(keyboard, self.me, self._callback_secret))
 		await self.api.edit_message(message_id, text=new_text, format="html", attachments=attachments)
 
 	async def delete_message(self, message_id: str) -> None:
 		await self.api.delete_message(message_id)
+		self._media.pop(message_id, None)
 
 	async def answer_callback(self, callback_id: str, *, text: str | None = None, alert: bool = False) -> None:
 		user_id = self._callback_users.pop(callback_id, None)
@@ -374,6 +402,7 @@ class MaxBot:
 			attachments=attachments,
 			link=_reply_link(reply_to),
 		)
+		self._remember_media(sent)
 		return self._message(sent)
 
 	async def download_file(
@@ -396,6 +425,38 @@ def _attachment(att: m.Attachment) -> Attachment | None:
 		return None
 	filename = getattr(att, "filename", None) or _DEFAULT_FILENAMES[att.type]
 	return Attachment(type=att.type, token=token, filename=filename, url=getattr(payload, "url", None))
+
+
+def media_requests(attachments: list[m.Attachment] | None) -> list[m.AttachmentRequest]:
+	"""A received message's attachments as they would be sent again, without
+	the keyboard (an edit sets that itself). Kinds that can't be sent again
+	are left out, with a warning."""
+	requests: list[m.AttachmentRequest] = []
+	for att in attachments or []:
+		request = _request_for(att)
+		if request is not None:
+			requests.append(request)
+		elif att.type != "inline_keyboard":
+			logger.warning("MAX: a %s attachment can't be kept when the message is edited", att.type)
+	return requests
+
+
+def _request_for(att: m.Attachment) -> m.AttachmentRequest | None:
+	if isinstance(att, m.PhotoAttachment) and att.payload.token:
+		return m.PhotoAttachmentRequest(payload=m.PhotoAttachmentRequestPayload(token=att.payload.token))
+	if isinstance(att, m.VideoAttachment) and att.payload.token:
+		return m.VideoAttachmentRequest(payload=m.UploadedInfo(token=att.payload.token))
+	if isinstance(att, m.AudioAttachment) and att.payload.token:
+		return m.AudioAttachmentRequest(payload=m.UploadedInfo(token=att.payload.token))
+	if isinstance(att, m.FileAttachment) and att.payload.token:
+		return m.FileAttachmentRequest(payload=m.UploadedInfo(token=att.payload.token))
+	if isinstance(att, m.StickerAttachment) and att.payload.code:
+		return m.StickerAttachmentRequest(payload=m.StickerAttachmentRequestPayload(code=att.payload.code))
+	if isinstance(att, m.LocationAttachment):
+		return m.LocationAttachmentRequest(latitude=att.latitude, longitude=att.longitude)
+	if isinstance(att, m.ShareAttachment) and (att.payload.url or att.payload.token):
+		return m.ShareAttachmentRequest(payload=m.ShareAttachmentPayload(url=att.payload.url, token=att.payload.token))
+	return None
 
 
 def _reply_link(reply_to: str | None) -> m.NewMessageLink | None:

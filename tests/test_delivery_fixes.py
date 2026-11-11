@@ -137,11 +137,12 @@ async def test_max_falls_back_to_an_empty_notification_if_an_empty_answer_is_ref
 
 async def test_max_edit_without_text_keeps_the_text_and_makes_bad_links_inert(caplog):
 	server = FakeMaxServer()
+	server.on("GET", "/messages/mid.1", message("menu"))
 	server.on("PUT", "/messages", {"success": True})
 	keyboard = Keyboard([[Button("Local", url="http://localhost:3000"), Button("Site", url="https://example.com")]])
 	with caplog.at_level(logging.WARNING, logger="matele.max.bot"):
 		await MaxBot("t", api=server.api()).edit_message("mid.1", None, keyboard=keyboard)
-	body = server.calls[0].json
+	body = server.calls[-1].json
 	assert "text" not in body  # the message keeps its text
 	buttons = body["attachments"][0]["payload"]["buttons"][0]
 	assert buttons[0] == {"type": "callback", "text": "Local", "payload": "noop"}
